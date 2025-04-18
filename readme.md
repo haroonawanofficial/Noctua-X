@@ -26,7 +26,7 @@ pip install -r requirements.txt      # Playwright installs Chromium automaticall
 # If Playwright skipped browser download, run:
 # playwright install chromium
 
-python ai_xss.py --url http://testphp.vulnweb.com
+python razkash.py --url http://testphp.vulnweb.com
 
 Common CLI Flags
 
