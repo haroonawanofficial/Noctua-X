@@ -1,27 +1,48 @@
-# AI XSS Fuzzer – RazKash (v4.3)
+# RazKash v4.3 — AI‑Powered XSS Fuzzer
 
-AI‑powered **cross‑site‑scripting discovery engine** that auto‑crawls an entire domain, detects every parameter surface (forms, query‑strings, JS‑defined endpoints) and unleashes a huge corpus of **mutated payloads** to verify real browser‑triggered XSS.
-
-|     Feature |
-|---|---------|
-| **AI‑driven payload mutation** |
-| **Super‑crawler** — walks every same‑domain link and scrapes JS (`fetch()`, `axios`, XHR) for hidden APIs |
-| Headless **Chromium verifier** (Playwright) for alert ( `dialog` ) confirmation & side‑effect detection |
-| Smart HTTPS⇆HTTP root probing, fake‑header rotation & human‑like delays to dodge WAFs |
-| Multithreaded fuzzing, slim deduped Markdown report (`≤ 120 B` per finding) |
-| `--debug`, `--autotest`, page/threads caps for controlled runs |
+> **AI Powered discovers zero‑day XSS by auto‑crawling an entire domain, generating novel payloads with AI, and verifying each hit in a real browser.**
 
 ---
 
-## Installation
+## Key Features
+- **AI‑driven payload mutation**
+- **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
+- **Headless Chromium verifier** (Playwright) that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
+- **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
+- **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
+- **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
+- Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
 
+---
+
+## Installation
 ```bash
+git clone https://github.com/your‑org/razkash.git
+cd razkash
+
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt  # see below
-sudo apt install -y chromium  # or your distro’s package```
+pip install -r requirements.txt      # Playwright installs Chromium automatically
 
-## How to Use?
-```
-python ai_xss.py --url http://testph.vulnweb.com 
-```
+# If Playwright skipped browser download, run:
+# playwright install chromium
 
+python ai_xss.py --url http://testphp.vulnweb.com
+
+Common CLI Flags
+
+Flag	Purpose
+--depth N	Maximum crawl depth (default 3)
+--threads N	Worker threads (default 20)
+--pages N	Max pages to crawl (no limit if omitted)
+--debug	Verbose logging + request/response dump
+--autotest	Run built‑in self‑test suite and exit
+Report Format
+Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
+
+bash
+Copy
+Edit
+[+] http://example.com/product?id=1337
+    parameter : id
+    payload   : "><svg/onload=alert(1)>
+```
