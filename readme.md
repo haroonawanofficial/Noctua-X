@@ -39,9 +39,6 @@ Flag	Purpose
 Report Format
 Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
 
-bash
-Copy
-Edit
 [+] http://example.com/product?id=1337
     parameter : id
     payload   : "><svg/onload=alert(1)>
