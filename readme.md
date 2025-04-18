@@ -22,6 +22,7 @@
 - WebAssembly & dynamic import() primitives
 - MutationObserver & DOM‑diff race vectors
 - CRLF → header injection chains
+- Stored, Reflected with auto Get/Post
 - RLO/Unicode disguise payloads
 - SMIL & SVG animation triggers
 - Blind‑XSS (DNS/WebSocket beacons)
