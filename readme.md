@@ -1,34 +1,34 @@
 # RazKash v4.3 — AI‑Powered XSS Fuzzer
 
- **AI Powered discovers zero‑day XSS by auto‑crawling an entire domain, generating novel payloads with AI, and verifying each hit in a real browser.**
+ **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
 ---
 
-## Overview
-### XSS vector families RazKash targets
-- **Script‑tag injections (<script>, <mg src=x onerror=…>)
-- **Attribute/event‑handler injections (onload=, onclick=, etc.)
-- **Inline‑JS URI handlers (javascript:alert(1))
-- **SVG namespace vectors
-- **Iframe / frame src manipulations
-- **Media elements (video, audio, source)
-- **Object/Embed/Flash fallbacks
-- **MathML payloads
-- **HTML5 interactive tags (details, marquee, dialog)
-- **CSS/Style payloads (expression, url() data‑URIs)
-- **JSONP/JS callback reflections
-- **DOM‑only sinks (innerHTML, location.hash, setTimeout)
-- **Shadow‑DOM context breaks
-- **WebAssembly & dynamic import() primitives
-- **MutationObserver & DOM‑diff race vectors
-- **CRLF → header injection chains
-- **RLO/Unicode disguise payloads
-- **SMIL & SVG animation triggers
-- **Blind‑XSS (DNS/WebSocket beacons)
-- **Polyglot & multi‑context payloads (HTML+JS+CSS)
+# Overview
+## What XSS vector RazKash targets?
+- Script‑tag injections (<script>, <mg src=x onerror=…>)
+- Attribute/event‑handler injections (onload=, onclick=, etc.)
+- Inline‑JS URI handlers (javascript:alert(1))
+- SVG namespace vectors
+- Iframe / frame src manipulations
+- Media elements (video, audio, source)
+- Object/Embed/Flash fallbacks
+- MathML payloads
+- HTML5 interactive tags (details, marquee, dialog)
+- CSS/Style payloads (expression, url() data‑URIs)
+- JSONP/JS callback reflections
+- DOM‑only sinks (innerHTML, location.hash, setTimeout)
+- Shadow‑DOM context breaks
+- WebAssembly & dynamic import() primitives
+- MutationObserver & DOM‑diff race vectors
+- CRLF → header injection chains
+- RLO/Unicode disguise payloads
+- SMIL & SVG animation triggers
+- Blind‑XSS (DNS/WebSocket beacons)
+- Polyglot & multi‑context payloads (HTML+JS+CSS)
 
-### Other Key Features
-- **AI mutation raises practical coverage to 500 000+ unique payloads
+## Key Features
+- AI mutation raises practical coverage to 500 000+ unique payloads
 - **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
 - **Headless Chromium verifier** (Playwright) that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
 - **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
