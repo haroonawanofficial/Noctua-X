@@ -31,7 +31,7 @@
 ## Key Features
 - AI mutation raises practical coverage to 500 000+ unique payloads
 - **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
-- **Headless Chromium verifier** (Playwright) that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
+- **Headless Chromium verifier** that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
 - **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
 - **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
 - **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
