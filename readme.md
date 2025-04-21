@@ -5,7 +5,7 @@
 ---
 
 ## Key Features
-- AI Supports for Logics
+- AI logic
 - Tubro charged 500 000+ unique payloads
 - **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
 - **Headless Chromium verifier** that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
