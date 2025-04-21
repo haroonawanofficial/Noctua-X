@@ -4,6 +4,18 @@
 
 ---
 
+## Key Features
+- AI mutation raises practical coverage to 500 000+ unique payloads
+- **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
+- **Headless Chromium verifier** that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
+- **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
+- **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
+- **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
+- Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
+
+---
+
+
 # Supports
 - All Modern Dynamic Websites/Webpages
 - All Modern Dynamic Endpoints
@@ -38,16 +50,6 @@
 - Blind‑XSS (DNS/WebSocket beacons)
 - Polyglot & multi‑context payloads (HTML+JS+CSS)
 
-## Key Features
-- AI mutation raises practical coverage to 500 000+ unique payloads
-- **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
-- **Headless Chromium verifier** that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
-- **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
-- **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
-- **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
-- Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
-
----
 
 ## Installation
 ```bash
