@@ -4,6 +4,16 @@
 
 ---
 
+# Supports
+- All Modern Dynamic Websites/Webpages
+- All Modern Dynamic Endpoints
+- All Modern Dynamic Apps
+- Discovers moder under the hidden surface
+- Detects more
+- Full support for DNS based beacons
+- Detects what others miss!
+
+
 # Overview
 ## What XSS vector RazKash targets?
 - Script‑tag injections (<script>, <mg src=x onerror=…>)
