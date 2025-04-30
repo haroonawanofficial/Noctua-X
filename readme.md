@@ -13,7 +13,20 @@
 - **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
 - **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
 - Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
-
+- Static & Dynamic Crawling (HTML links, JS assets, sitemaps, manifests, Playwright-driven XHR/DOM)  
+- AI-Powered Payload Mutation with CodeBERT, running on CUDA if available  
+- Polyglot & Context-Aware Payloads (HTML, attributes, CSS, SVG/XLink, URLs, templates, WebAssembly, service-worker cache, modern APIs)  
+- Client-Side Template Injection support (AngularJS, Handlebars, Vue, React)  
+- CSP & TrustedTypes Bypass stubs and gadget chains  
+- Blind/OOB XSS via DNSLOG callbacks  
+- WebAssembly & Service-Worker Cache Injection fuzzing  
+- Modern API Fuzzing (WebGPU, WebXR, WebTransport, SharedArrayBuffer)  
+- Edge-Case Encoding & Parsing Quirks (RTL override, HTTP/2 path tricks, MIME-sniffing)  
+- Cross-Protocol & Cross-Origin Chains (file://, ftp://, WebSocket race)  
+- Advanced DOM Clobbering & Prototype Pollution vectors  
+- In-Browser Verification of sink execution via Playwright + injected JSFLAG  
+- HTTP/HTTPS & WebSocket fuzzers in one tool
+  
 ---
 
 
