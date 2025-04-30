@@ -156,6 +156,7 @@ Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
 ```
 
 ## Generates never seen before payload on the spot 
+- It generates on-the-fly AI mutation and polymorphic encoding to craft unique, never-seen-before XSS payloads tailored to each context automatically for perfect hit!
 ```
 <!--><script>__proto__.x=amounts</script><!-->
 ```
