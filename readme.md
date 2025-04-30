@@ -14,7 +14,8 @@
 - **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
 - Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
 - Static & Dynamic Crawling (HTML links, JS assets, sitemaps, manifests, Playwright-driven XHR/DOM)  
-- AI-Powered Payload Mutation with CodeBERT, running on CUDA if available  
+- AI-Powered
+- GPU Powered
 - Polyglot & Context-Aware Payloads (HTML, attributes, CSS, SVG/XLink, URLs, templates, WebAssembly, service-worker cache, modern APIs)  
 - Client-Side Template Injection support (AngularJS, Handlebars, Vue, React)  
 - CSP & TrustedTypes Bypass stubs and gadget chains  
