@@ -1,4 +1,4 @@
-# RazKash v8.1 — AI‑Powered XSS Fuzzer
+# RazKash v8.1 — Turbo Charged GPU Powered - AI XSS Fuzzer
 
  **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
