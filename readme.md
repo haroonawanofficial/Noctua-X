@@ -155,6 +155,19 @@ Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
 │   ✓ fuzzing complete
 ```
 
+## In RazKash, polymorphing includes:
+- Encoding (hex, URL, unicode, base64)
+- Structural rewrites (swapping attribute order, obfuscating tags)
+- Wrapping in innocent-looking tags
+- Inserting comments/random whitespace
+- Reversing, right-to-left override
+- Rebuilding payload trees (AST/JS-based)
+
+## Why it's important:
+- Static filters and WAFs often look for exact patterns
+- Polymorphic payloads bypass regex/sig-based detection
+- Useful in zero-day fuzzing, evasion testing, and XSS detection in hardened environments
+
 ## Generates never seen before payload on the spot 
 - It generates on-the-fly AI mutation and polymorphic encoding to craft unique, never-seen-before XSS payloads tailored to each context automatically for perfect hit!
 ```
