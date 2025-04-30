@@ -125,6 +125,44 @@ def random_headers() -> Dict[str, str]:
         h["X-Random"] = randstr(8)
     return h
 
+INTROSPECTION = """
+query IntrospectionQuery {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      kind name fields {
+        name args { name type { kind name ofType { name kind } } }
+      }
+    }
+  }
+}
+"""
+
+def discover_graphql_ops(endpoint):
+    resp = SESSION.post(endpoint, json={"query": INTROSPECTION}, timeout=HTTP_TIMEOUT, verify=False)
+    schema = resp.json()["data"]["__schema"]
+    ops = []
+    for kind in ("queryType","mutationType"):
+        root = schema.get(kind)
+        if not root: continue
+        for t in schema["types"]:
+            if t["name"] == root["name"]:
+                for f in t["fields"]:
+                    string_args = [arg["name"] for arg in f["args"]
+                                   if arg["type"]["kind"]=="SCALAR" and arg["type"]["name"]=="String"]
+                    if string_args:
+                        ops.append((f["name"], string_args))
+    return ops
+
+def fuzz_graphql(endpoint):
+    for name, args in discover_graphql_ops(endpoint):
+        for arg in args:
+            payload = "<img src=x onerror=alert(1)>"
+            query = f"mutation{{{name}({arg}:\"{payload}\"){{__typename}}}}"
+            SESSION.post(endpoint, json={"query": query}, timeout=HTTP_TIMEOUT, verify=False)
+
+
 # ─── AUTHENTICATION / SESSION ──────────────────────────────────────────────
 def get_authenticated_session() -> requests.Session:
     sess = requests.Session()
@@ -486,9 +524,9 @@ def misc_assets(root: str) -> List[str]:
     return list(set(assets))
 
 # ─── STATIC CRAWLER ─────────────────────────────────────────────────────────
-def crawl_static(root: str, cap: int, depth: int=0) -> List[Dict[str,Any]]:
+def crawl_static(root: str, cap: int, depth: int = 0) -> List[Dict[str, Any]]:
     visited = set()
-    queue = [(root,0)] + [(u,0) for u in misc_assets(root)]
+    queue = [(root, 0)] + [(u, 0) for u in misc_assets(root)]
     targets = []
     host = urllib.parse.urlparse(root).netloc.lower()
     logging.info(f"[static] crawling {root} (≤{cap} pages, depth={depth})")
@@ -502,6 +540,7 @@ def crawl_static(root: str, cap: int, depth: int=0) -> List[Dict[str,Any]]:
         except Exception as e:
             dbg(f"[static] {u} err: {e}")
             continue
+
         c = r.headers.get("Content-Type", "")
         if "javascript" in c:
             for js in mine_js(u, host):
@@ -510,16 +549,20 @@ def crawl_static(root: str, cap: int, depth: int=0) -> List[Dict[str,Any]]:
             continue
         if "html" not in c:
             continue
+
         soup = BeautifulSoup(r.text, "html.parser")
+        # handle iframes
         if args.crawl_iframes and d < args.nested_depth:
             for iframe in soup.find_all("iframe", src=True):
                 src = urllib.parse.urljoin(u, iframe["src"])
                 if urllib.parse.urlparse(src).netloc.lower() == host:
-                    queue.append((src, d+1))
+                    queue.append((src, d + 1))
+        # enqueue scripts
         for tag in soup.find_all("script", src=True):
             src = urllib.parse.urljoin(u, tag["src"])
             if urllib.parse.urlparse(src).netloc.lower() == host:
                 queue.append((src, d))
+        # links
         for a in soup.find_all("a", href=True):
             nxt = urllib.parse.urljoin(u, a["href"])
             p = urllib.parse.urlparse(nxt)
@@ -529,27 +572,41 @@ def crawl_static(root: str, cap: int, depth: int=0) -> List[Dict[str,Any]]:
                 queue.append((nxt, d))
             if p.query:
                 qs = list(urllib.parse.parse_qs(p.query).keys())
-                targets.append({"url": p._replace(query="").geturl(), "method":"GET", "params":qs})
+                targets.append({"url": p._replace(query="").geturl(), "method": "GET", "params": qs})
+        # forms
         for f in soup.find_all("form"):
             act = urllib.parse.urljoin(u, f.get("action") or u)
             if urllib.parse.urlparse(act).netloc.lower() != host:
                 continue
             mth = f.get("method", "get").upper()
-            params = [i.get("name") for i in f.find_all(["input","textarea","select"]) if i.get("name")]
+            params = [i.get("name") for i in f.find_all(["input", "textarea", "select"]) if i.get("name")]
             if params:
                 targets.append({"url": act, "method": mth, "params": params})
+        # buttons
         for btn in soup.find_all("button"):
             name = btn.get("name")
-            fa = btn.get("formaction")
-            mth = btn.get("formmethod", "post").upper()
+            fa   = btn.get("formaction")
+            mth  = btn.get("formmethod", "post").upper()
             url2 = urllib.parse.urljoin(u, fa) if fa else u
             if name:
-                targets.append({"url": url2, "method": mth, "params":[name]})
+                targets.append({"url": url2, "method": mth, "params": [name]})
+        # submit inputs
+        for inp in soup.find_all("input", {"type": "submit"}):
+            name = inp.get("name")
+            fa   = inp.get("formaction")
+            mth  = inp.get("formmethod", "post").upper()
+            url2 = urllib.parse.urljoin(u, fa) if fa else u
+            if name:
+                targets.append({"url": url2, "method": mth, "params": [name]})
+        # semantic targets
         targets += extract_semantic_targets(r.text, u)
         jitter(0.3, 0.9)
+
     logging.info(f"[static] discovered {len(targets)} endpoints")
     return targets
 
+
+# ─── DYNAMIC CRAWLER ───────────────────────────────────────────────────────
 # ─── DYNAMIC CRAWLER ───────────────────────────────────────────────────────
 def crawl_dynamic(root: str) -> List[Dict[str,Any]]:
     if not sync_playwright:
@@ -561,9 +618,18 @@ def crawl_dynamic(root: str) -> List[Dict[str,Any]]:
     logging.info(f"[dynamic] launching Playwright for {root}")
     try:
         with sync_playwright() as p:
-            br = p.chromium.launch(headless=not args.headed, args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
-            ctx = br.new_context(ignore_https_errors=True, user_agent=UserAgent().random, service_workers="allow")
+            br = p.chromium.launch(
+                headless=not args.headed,
+                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
+            )
+            ctx = br.new_context(
+                ignore_https_errors=True,
+                user_agent=UserAgent().random,
+                service_workers="allow"
+            )
             page = ctx.new_page()
+
+            # intercept all network requests (XHR/fetch/etc)
             def on_req(req: PWReq):
                 u = req.url
                 if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
@@ -587,43 +653,81 @@ def crawl_dynamic(root: str) -> List[Dict[str,Any]]:
                     "json": bool(keys),
                     "template": tpl
                 })
+
             page.on("request", on_req)
             if args.crawl_iframes:
                 page.on("frameattached", lambda f: f.on("request", on_req))
+
+            # propagate existing cookies
             for c in SESSION.cookies:
-                page.context.add_cookies([{"name":c.name, "value":c.value, "domain":c.domain, "path":c.path}])
+                page.context.add_cookies([{
+                    "name": c.name, "value": c.value,
+                    "domain": c.domain, "path": c.path
+                }])
+
             page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+
+            # simulate SPA navigation
             if args.simulate_spa:
                 for a in page.query_selector_all("a[href]"):
                     with contextlib.suppress(Exception):
-                        a.click(); page.wait_for_timeout(SPA_WAIT_MS)
+                        a.click()
+                        page.wait_for_timeout(SPA_WAIT_MS)
+
+            # click buttons and submit inputs
             for b in page.query_selector_all("button, input[type=submit]"):
                 with contextlib.suppress(Exception):
-                    b.click(); page.wait_for_timeout(SPA_WAIT_MS)
+                    b.click()
+                    page.wait_for_timeout(SPA_WAIT_MS)
+
+            # shadow-DOM–aware form extractor
             def dom_forms():
-                forms = page.evaluate("""() => Array.from(document.forms).map(f=>({
-                    action: f.action||location.href,
-                    method: (f.method||'get').toUpperCase(),
-                    params: Array.from(f.querySelectorAll('input[name],textarea[name],select[name]')).map(i=>i.name)
-                }))""")
+                forms = page.evaluate("""
+() => {
+    const out = [];
+    function collectForms(root) {
+        root.querySelectorAll('form').forEach(f => out.push(f));
+        root.querySelectorAll('*').forEach(el => {
+            if (el.shadowRoot) collectForms(el.shadowRoot);
+        });
+    }
+    collectForms(document);
+    return out.map(f => ({
+        action: f.action || location.href,
+        method: (f.method || 'get').toUpperCase(),
+        params: Array.from(
+            f.querySelectorAll('input[name],textarea[name],select[name]')
+        ).map(i => i.name)
+    }));
+}
+                """)
                 for f in forms:
                     a = f["action"]
                     if urllib.parse.urlparse(a).netloc.lower() != host or not f["params"]:
                         continue
                     found.append({"url": a, "method": f["method"], "params": f["params"]})
+
+            # initial form harvest
             dom_forms()
-            start = time.time()*1000
+
+            # observe for dynamically injected forms
+            start = time.time() * 1000
             rounds = 0
-            while (time.time()*1000 - start) < DYN_OBS_MS and rounds < MAX_DYN_ROUNDS:
+            while (time.time() * 1000 - start) < DYN_OBS_MS and rounds < MAX_DYN_ROUNDS:
                 with contextlib.suppress(Exception):
                     page.wait_for_timeout(RESCAN_MS)
                 dom_forms()
                 rounds += 1
-            ctx.close(); br.close()
+
+            ctx.close()
+            br.close()
+
     except Exception as e:
         dbg(f"[dynamic] {e}")
+
     logging.info(f"[dynamic] discovered {len(found)} endpoints")
     return found
+
 
 # ─── FUZZING ENGINES ───────────────────────────────────────────────────────
 def fuzz_http(t: Dict[str,Any]) -> None:
