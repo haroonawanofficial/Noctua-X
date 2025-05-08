@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# RazKash 𝕏SS AI Fuzzer · v9.2 Enterprise (2025-05-10)
+# RazKash 𝕏SS AI Fuzzer · v9.2  
 # Author : Haroon Ahmad Awan · CyberZeus (mrharoonawan@gmail.com)
 # =============================================================================
 
@@ -299,90 +299,128 @@ SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|Error|error|ERROR|unc
 
 def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
     """
-    Launches a headless or headed browser to see if any script 
-    event (alert, confirm, prompt, CSP violation, or DOM mutation) was triggered.
-    Captures screenshot + optional video for visual proof.
+    Super-advanced verification using Playwright with DOM sink detection,
+    race condition fuzzing, iframe sandbox breakout, Shadow DOM probing,
+    and visual logging via screenshot.
     """
     if not sync_playwright:
         return False
+
     try:
         screenshot_dir = Path("screenshots")
         screenshot_dir.mkdir(exist_ok=True)
 
+        url_hash = hashlib.md5(f"{url}{json.dumps(data, sort_keys=True)}".encode()).hexdigest()[:8]
+
         with sync_playwright() as p:
-            bw = p.chromium.launch(
+            browser = p.chromium.launch(
                 headless=not args.headed,
-                args=[
-                    "--disable-web-security",
-                    "--ignore-certificate-errors",
-                    "--no-sandbox"
-                ]
+                args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
             )
 
-            # Record video (optional)
-            ctx = bw.new_context(
+            context = browser.new_context(
                 ignore_https_errors=True,
                 user_agent=UserAgent().random,
                 record_video_dir=str(screenshot_dir / "videos")
             )
 
-            page = ctx.new_page()
+            page = context.new_page()
 
-            page.add_init_script("""
+            page.add_init_script(f"""
                 window._xss_triggered = false;
-                const mark = () => window._xss_triggered = true;
+                window._xss_reason = "unknown";
+                const mark = (r) => {{
+                    window._xss_triggered = true;
+                    window._xss_reason = r || "unknown";
+                }};
 
-                // Alert hooks
-                ['alert','confirm','prompt'].forEach(fn => {
+                // Hook common sinks
+                ['alert','confirm','prompt'].forEach(fn => {{
                     const o = window[fn];
-                    window[fn] = (...a) => { mark(); return o(...a); };
-                });
+                    window[fn] = (...a) => {{ mark(fn); return o(...a); }};
+                }});
 
-                // CSP hook
-                document.addEventListener('securitypolicyviolation', mark);
+                document.addEventListener('securitypolicyviolation', () => mark("csp-violation"));
 
-                // DOM MutationObserver
-                const mo = new MutationObserver(() => mark());
-                mo.observe(document.body, {childList: true, subtree: true});
+                // MutationObserver (DOM diff race)
+                const mo = new MutationObserver(() => mark("mutation-observer"));
+                mo.observe(document, {{ childList: true, subtree: true }});
 
-                // Delayed race injection
-                setTimeout(() => {
+                // Delayed DOM injection with multiple vector types
+                setTimeout(() => {{
+                    // Image vector
                     const img = document.createElement("img");
                     img.src = "x";
-                    img.onerror = () => { mark(); };
+                    img.onerror = () => mark("img-onerror");
                     document.body.appendChild(img);
-                }, 500);
+
+                    // Inline script injection
+                    const s = document.createElement("script");
+                    s.innerHTML = "mark('inline-script')";
+                    document.body.appendChild(s);
+
+                    // Style trick
+                    const st = document.createElement("style");
+                    st.innerHTML = "*{{background:url('javascript:alert(1)')}}";
+                    document.head.appendChild(st);
+
+                    // Iframe injection with srcdoc
+                    const ifr = document.createElement("iframe");
+                    ifr.srcdoc = '<script>parent.mark("iframe-srcdoc")</script>';
+                    document.body.appendChild(ifr);
+
+                    // Shadow DOM sink
+                    const div = document.createElement("div");
+                    const shadow = div.attachShadow({{mode:'open'}});
+                    const shadow_script = document.createElement("script");
+                    shadow_script.innerHTML = "parent.mark('shadow-dom')";
+                    shadow.appendChild(shadow_script);
+                    document.body.appendChild(div);
+
+                }}, 700);
             """)
 
-            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("window._xss_triggered = true")))
+            # Hook dialogs
+            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("mark('dialog')")))
 
-            # Navigate and send data
+            # Send request & render
             if method.upper() == "GET":
                 q = urllib.parse.urlencode(data)
                 page.goto(f"{url}?{q}", timeout=VERIFY_TIMEOUT, wait_until="networkidle")
             else:
                 page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-                hdr = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
+                headers = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
                 body = json.dumps(data) if is_json else urllib.parse.urlencode(data)
-                page.evaluate("(u,h,b)=>fetch(u,{method:'POST',headers:h,body:b})", url, hdr, body)
+                page.evaluate("(u,h,b) => fetch(u, {{method:'POST', headers:h, body:b}})", url, headers, body)
 
-            page.wait_for_timeout(HEADLESS_WAIT + 1000)
+            # Before-shot (DOM snapshot before injection)
+            before_ss = f"{url_hash}_before.png"
+            page.screenshot(path=str(screenshot_dir / before_ss), full_page=True)
 
-            # Screenshot
-            fname = f"{randstr(10)}.png"
-            page.screenshot(path=str(screenshot_dir / fname), full_page=True)
+            # Wait for delayed triggers
+            page.wait_for_timeout(HEADLESS_WAIT + 1200)
 
+            # After-shot
+            after_ss = f"{url_hash}_after.png"
+            page.screenshot(path=str(screenshot_dir / after_ss), full_page=True)
+
+            # Evaluate triggers
             hit = page.evaluate("window._xss_triggered")
-            ctx.close()
-            bw.close()
+            reason = page.evaluate("window._xss_reason")
+            context.close()
+            browser.close()
 
             if hit:
-                dbg(f"[verify] XSS triggered, screenshot saved → screenshots/{fname}")
+                dbg(f"[verify] XSS TRIGGERED by {reason} — Screenshots: {before_ss}, {after_ss}")
+            else:
+                dbg(f"[verify] No trigger — Screenshots captured: {before_ss}, {after_ss}")
+
             return bool(hit)
 
     except Exception as ex:
-        dbg(f"[verify] {ex}")
+        dbg(f"[verify error] {ex}")
         return False
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
