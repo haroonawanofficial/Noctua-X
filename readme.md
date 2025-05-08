@@ -74,6 +74,7 @@
 
 # Overview
 ## What XSS vector RazKash targets?
+```
 - Script‑tag injections (<script>, <mg src=x onerror=…>)
 - Attribute/event‑handler injections (onload=, onclick=, etc.)
 - Inline‑JS URI handlers (javascript:alert(1))
@@ -121,6 +122,7 @@
 - Cross-Protocol Vectors file://, ftp://, ws://, and iframe sandbox tricks
 - Fuzzing nested or deep keys within JSON requests and GraphQL variables
 - Service Worker Cache Poisoning
+```
 
 ## Installation
 ```bash
