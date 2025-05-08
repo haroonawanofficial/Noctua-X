@@ -1058,6 +1058,10 @@ def spa_dynamic_crawl(root, max_clicks=20):
     seen_req = set()
     host = urllib.parse.urlparse(root).netloc.lower()
 
+    def normalize(u):
+        parsed = urllib.parse.urlparse(u)._replace(query='', fragment='')
+        return parsed.geturl().lower()
+
     try:
         with sync_playwright() as p:
             br = p.chromium.launch(
@@ -1068,59 +1072,46 @@ def spa_dynamic_crawl(root, max_clicks=20):
             page = ctx.new_page()
 
             def on_req(req):
-                u = req.url
-                netloc = urllib.parse.urlparse(u).netloc.lower()
-                sig = f"{req.method}:{u.split('?')[0]}"
-                if netloc == host and sig not in seen_req:
-                    seen_req.add(sig)
-                    m = req.method.upper()
-                    hd = req.headers
-                    is_json = ("application/json" in hd.get("content-type","").lower())
-                    post_data = req.post_data or ""
-                    try:
-                        body_json = json.loads(post_data)
-                        param_names = list(body_json.keys())
-                    except:
-                        body_json = {}
-                        param_names = ["json_payload"] if is_json else []
+                u = normalize(req.url)
+                sig = f"{req.method}:{u}"
+                if urllib.parse.urlparse(u).netloc.lower() != host or sig in seen_req:
+                    return
+                seen_req.add(sig)
 
-                    if not is_json:
-                        qs = urllib.parse.urlparse(u).query
-                        if qs:
-                            qs_parts = urllib.parse.parse_qs(qs)
-                            for k in qs_parts.keys():
-                                if k not in param_names:
-                                    param_names.append(k)
+                m = req.method.upper()
+                hdr = req.headers
+                is_json = ("application/json" in hdr.get("content-type", "").lower())
+                post_data = req.post_data or ""
+                try:
+                    body_json = json.loads(post_data)
+                    param_names = list(body_json.keys())
+                except:
+                    body_json = {}
+                    param_names = ["json_payload"] if is_json else []
 
-                    found.append({
-                        "url": u.split("?",1)[0],
-                        "method": m if m in ("POST","PUT") else "GET",
-                        "params": param_names,
-                        "json": is_json,
-                        "template": body_json
-                    })
+                found.append({
+                    "url": u,
+                    "method": m if m in ("POST", "PUT") else "GET",
+                    "params": param_names,
+                    "json": is_json,
+                    "template": body_json
+                })
 
             page.on("request", on_req)
             page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
 
-            click_count = 0
             for _ in range(max_clicks):
                 els = page.query_selector_all("a[href], button, [role=button], .router-link")
                 if not els:
                     break
                 random.shuffle(els)
-                clicked = False
                 for e in els:
                     try:
                         e.click(timeout=2000)
                         page.wait_for_timeout(1500)
-                        click_count += 1
-                        clicked = True
                         break
                     except:
-                        pass
-                if not clicked:
-                    break
+                        continue
 
             ctx.close()
             br.close()
@@ -1128,6 +1119,7 @@ def spa_dynamic_crawl(root, max_clicks=20):
         dbg(f"[spa_dynamic_crawl] {ex}")
 
     return found
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1259,6 +1251,14 @@ def crawl_static(root, cap, depth=0, visited=None):
     if visited is None:
         visited = set()
 
+    def normalize(u):
+        parsed = urllib.parse.urlparse(u)._replace(query='', fragment='')
+        path = re.sub(r'/+', '/', parsed.path)
+        if path.endswith('/') and path != '/':
+            path = path[:-1]
+        parsed = parsed._replace(path=path)
+        return parsed.geturl().lower()
+
     queue = [root] + misc_assets(root)
     results = []
     seen = set()
@@ -1266,20 +1266,12 @@ def crawl_static(root, cap, depth=0, visited=None):
 
     while queue and len(visited) < cap:
         u = queue.pop(0)
-        # Normalize
-        sig = u.lower()
-        parsed = urllib.parse.urlparse(sig)._replace(query='', fragment='')
-        path = re.sub(r'/+', '/', parsed.path)
-        if path.endswith('/') and path != '/':
-            path = path[:-1]
-        parsed = parsed._replace(path=path)
-        sig = parsed.geturl()
-
+        sig = normalize(u)
         if sig in visited:
             continue
         visited.add(sig)
 
-        ext = Path(parsed.path).suffix.lstrip('.').lower()
+        ext = Path(urllib.parse.urlparse(sig).path).suffix.lstrip('.').lower()
         if ext in static_exts:
             continue
 
@@ -1292,15 +1284,8 @@ def crawl_static(root, cap, depth=0, visited=None):
 
         ct = (r.headers.get("content-type","") or "").lower()
         if "javascript" in ct:
-            # parse any subrequests in JS
             for jurl in mine_js(u, host):
-                js_sig = jurl.lower()
-                js_parsed = urllib.parse.urlparse(js_sig)._replace(query='', fragment='')
-                js_path = re.sub(r'/+', '/', js_parsed.path)
-                if js_path.endswith('/') and js_path != '/':
-                    js_path = js_path[:-1]
-                js_parsed = js_parsed._replace(path=js_path)
-                js_sig = js_parsed.geturl()
+                js_sig = normalize(jurl)
                 if js_sig not in visited:
                     queue.append(jurl)
             continue
@@ -1314,26 +1299,19 @@ def crawl_static(root, cap, depth=0, visited=None):
             if not link_url:
                 continue
 
-            mth = nt.get("method","GET").upper()
+            mth = nt.get("method", "GET").upper()
             params = nt.get("params", [])
-            key = f"{mth}:{link_url}:{','.join(params)}"
+            key = f"{mth}:{normalize(link_url)}:{','.join(sorted(params))}"
             if key not in seen:
                 seen.add(key)
                 results.append(nt)
 
-                # BFS re-queue
-                link_sig = link_url.lower()
-                link_parsed = urllib.parse.urlparse(link_sig)._replace(query='', fragment='')
-                link_path = re.sub(r'/+', '/', link_parsed.path)
-                if link_path.endswith('/') and link_path != '/':
-                    link_path = link_path[:-1]
-                link_parsed = link_parsed._replace(path=link_path)
-                link_sig = link_parsed.geturl()
-
+                link_sig = normalize(link_url)
                 if link_sig not in visited:
                     queue.append(link_url)
 
     return results
+
 
 def crawl_dynamic(root):
     if not sync_playwright:
@@ -1342,6 +1320,10 @@ def crawl_dynamic(root):
     found = []
     seen = set()
     host = urllib.parse.urlparse(root).netloc.lower()
+
+    def normalize(u):
+        parsed = urllib.parse.urlparse(u)._replace(query='', fragment='')
+        return parsed.geturl().lower()
 
     try:
         with sync_playwright() as p:
@@ -1353,7 +1335,7 @@ def crawl_dynamic(root):
             page = ctx.new_page()
 
             def on_req(req):
-                u = req.url.split("?", 1)[0]
+                u = normalize(req.url)
                 if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
                     return
                 seen.add(u)
@@ -1370,7 +1352,7 @@ def crawl_dynamic(root):
 
                 found.append({
                     "url": u,
-                    "method": m if m in ("POST","PUT") else "GET",
+                    "method": m if m in ("POST", "PUT") else "GET",
                     "params": params,
                     "json": is_json,
                     "template": data if is_json else {}
@@ -1456,11 +1438,20 @@ def chunked_fuzz_request(url, method, headers, body):
         else:
             return requests.post(url, headers=headers, data=body, timeout=HTTP_TIMEOUT, verify=False)
 
+# GLOBAL dedup cache for actual HTTP requests
+global_visited_http = set()
+
 def fuzz_http(t: Dict[str, Any], use_chunked=False):
+    global global_visited_http
     ext = Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
     if ext in static_exts:
         return
 
+    # ✅ HARD SKIP: if already visited this exact GET URL with same params
+    key = f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}"
+    if key in global_visited_http:
+        return
+    global_visited_http.add(key)
     rate_limit()
     session_splice()
 
@@ -1708,6 +1699,19 @@ def main():
 
         all_targets = static_targets + dynamic_targets + spa_targets
 
+        # 🔒 Deduplicate targets fully before separating by protocol
+        uniq: Dict[str, Dict[str, Any]] = {}
+        for t in all_targets:
+            params = t.get("params", [])
+            key = f"{t['method']}:{t['url']}:{','.join(sorted(params))}"
+            if key not in uniq:
+                uniq[key] = t
+        all_targets = list(uniq.values())
+
+        # Separate HTTP and WS targets after deduplication
+        http_targets = [t for t in all_targets if not t["url"].startswith(("ws://", "wss://"))]
+        ws_targets = [t for t in all_targets if t["url"].startswith(("ws://", "wss://"))]
+
         # Check GraphQL
         if "graphql" in root.lower() or "/graphql" in root.lower():
             fuzz_graphql(root)
@@ -1719,7 +1723,7 @@ def main():
         # Single-session stored
         if mode == "stored" and not args.multi_session:
             for t in static_targets:
-                if t.get("method") in ("POST","PUT") and not t.get("json", False):
+                if t.get("method") in ("POST", "PUT") and not t.get("json", False):
                     for pay in all_stored_payloads:
                         try:
                             cs = rotate_csrf_token(SESSION, t["url"], args.csrf_field) or ""
@@ -1728,7 +1732,7 @@ def main():
                                 data[args.csrf_field] = cs
                             SESSION.post(
                                 t["url"], data=data,
-                                headers=random_headers(t["url"]),
+                                headers=random_headers(),
                                 timeout=HTTP_TIMEOUT, verify=False
                             )
                             if verify(t["url"], "GET", {}, False):
@@ -1736,20 +1740,7 @@ def main():
                         except Exception as ex:
                             dbg(f"[stored] {ex}")
 
-        # Otherwise (reflected, blind, or all)
-        elif mode in ("reflected","blind","all"):
-            http_targets = [t for t in all_targets if not t["url"].startswith(("ws://","wss://"))]
-            ws_targets   = [t for t in all_targets if t["url"].startswith(("ws://","wss://"))]
-
-            # Deduplicate
-            uniq = {}
-            for t in http_targets:
-                params = t.get("params", [])
-                key = f"{t['method']}:{t['url']}:{','.join(sorted(params))}"
-                if key not in uniq:
-                    uniq[key] = t
-            http_targets = list(uniq.values())
-
+        elif mode in ("reflected", "blind", "all"):
             with ThreadPoolExecutor(max_workers=args.threads) as pool:
                 for t in http_targets:
                     pool.submit(fuzz_http, t)
