@@ -1,4 +1,4 @@
-# RazKash v9.2 — Turbo Charged GPU Powered - AI XSS Fuzzer
+# Noctua v9.2 — Turbo Charged GPU Powered - AI XSS Fuzzer
 
  **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
@@ -52,7 +52,7 @@
 - Race-condition fuzzing & deferred triggers
 - CSRF & Auth Cookie handling logic
 - Multi-session stored XSS testing
-- Auto Markdown logging (razkash_findings.md)
+- Auto Markdown logging (Noctua_findings.md)
 - JSON/SARIF/Slack hooks (future reserved)
 - ThreadPoolExecutor with --threads
 - Page/Depth/WAF/SPAs/Poly/Headed flags
@@ -73,7 +73,7 @@
 
 
 # Overview
-## What XSS vector RazKash targets?
+## What XSS vector Noctua targets?
 ```
 - Script‑tag injections (<script>, <mg src=x onerror=…>)
 - Attribute/event‑handler injections (onload=, onclick=, etc.)
@@ -126,8 +126,8 @@
 
 ## Installation
 ```bash
-git clone https://github.com/your‑org/razkash.git
-cd razkash
+git clone https://github.com/your‑org/Noctua.git
+cd Noctua
 
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt      # Playwright installs Chromium automatically
@@ -135,7 +135,7 @@ pip install -r requirements.txt      # Playwright installs Chromium automaticall
 # If Playwright skipped browser download, run:
 # playwright install chromium
 
-python razkash.py --url http://testphp.vulnweb.com
+python Noctua.py --url http://testphp.vulnweb.com
 
 Common CLI Flags
 
@@ -165,7 +165,7 @@ Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
 │   ✓ fuzzing complete
 ```
 
-## In RazKash, polymorphing includes:
+## In Noctua, polymorphing includes:
 - Encoding (hex, URL, unicode, base64)
 - Structural rewrites (swapping attribute order, obfuscating tags)
 - Wrapping in innocent-looking tags
