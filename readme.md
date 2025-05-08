@@ -5,6 +5,7 @@
 ---
 
 ## Key Features
+```
 - AI-Based Context-Aware Fuzzing uniquepayloads, generated on-the-fly with AI mutation
 - Super-crawler: Walks every same-origin link and scrapes JavaScript (fetch, axios, XHR) to surface hidden APIs
 - Headless Chromium verifier using Playwright — intercepts dialog events and DOM side effects to confirm exploitation
@@ -55,7 +56,7 @@
 - JSON/SARIF/Slack hooks (future reserved)
 - ThreadPoolExecutor with --threads
 - Page/Depth/WAF/SPAs/Poly/Headed flags
-
+```
 
   
 ---
