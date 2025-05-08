@@ -80,8 +80,32 @@ WAF_SPOOF_HEADERS = [
     {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"},
     {"User-Agent": "curl/7.68.0"},
     {"User-Agent": "Wget/1.20.3 (linux-gnu)"},
+    {"user-agent": "curl/7.64.1"},                 # lowercase header name
+    {"User-AGENT": "Wget/1.20.3 (linux-gnu)"},    # mixed-case
     {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Forwarded-For": "192.168.1.100, 127.0.0.1"},
     {"X-Client-IP": "127.0.0.1"},
+    {"X-Real-IP": "127.0.0.1"},
+    {"CF-Connecting-IP": "127.0.0.1"},
+    {"True-Client-IP": "127.0.0.1"},
+    {"Forwarded": "for=127.0.0.1;proto=https"},
+    {"X-Forwarded-Host": "example.com"},
+    {"X-Forwarded-Proto": "https"},
+    {"Referer": "https://www.google.com/"},
+    {"Accept-Language": "en-US,en;q=0.9"},
+    {"Accept-Encoding": "gzip, deflate, br"},
+    {"Upgrade-Insecure-Requests": "1"},
+    {"Cache-Control": "max-age=0"},
+    {"Pragma": "no-cache"},
+    {"Connection": "keep-alive"},
+    {"X-Requested-With": "XMLHttpRequest"},
+    {"X-WAP-Profile": "http://example.com/wap.xml"},
+    {"X-HTTP-Method-Override": "GET"},
+    {"X-Originating-IP": "127.0.0.1"},
+    {"Via": "1.1 varnish"},
+    {"X-UIDH": "123456"},    # Akamai
+    {"X-CDN": "Incapsula"},
+    {"X-Edge-IP": "127.0.0.1"},
 ]
 
 # Slack & SARIF
@@ -1102,8 +1126,13 @@ def parse_html_forms_links(url, text):
         pu   = urllib.parse.urlparse(link)
         if pu.netloc.lower() == host:
             qs = list(urllib.parse.parse_qs(pu.query).keys())
-            results.append({"url": pu._replace(query="").geturl(), "method": "GET", "params": qs})
+            results.append({
+            "url": pu._replace(query="").geturl(), 
+            "method": "GET",
+            "params": qs
+            })
 
+    
     # forms
     for f in soup.find_all("form"):
         act = urllib.parse.urljoin(url, f.get("action") or url)
@@ -1124,24 +1153,52 @@ def parse_html_forms_links(url, text):
 
     return results
 
+
+def url_signature(method: str, url: str) -> str:
+    return f"{method}:{url.split('?')[0].lower()}"
+
 def crawl_static(root, cap, depth=0, visited=None):
-    """Simple BFS over pages to gather forms/links up to 'cap' pages, respecting iframes if requested."""
     if visited is None:
         visited = set()
 
     queue = [root] + misc_assets(root)
     results = []
+    seen = set()  # Tracks “METHOD:URL + param list”
     host = urllib.parse.urlparse(root).netloc.lower()
 
     while queue and len(visited) < cap:
         u = queue.pop(0)
-        sig = u.split("?")[0].lower()
+
+        # ----------------------------------------------------------
+        # 1) Normalize the URL using your existing 'sig' variable
+        #    so /? is treated like / and remove query+fragment
+        # ----------------------------------------------------------
+        sig = u.lower()
+        parsed = urllib.parse.urlparse(sig)
+
+        # Remove the query and fragment so "?" or "#foo" won't differ
+        parsed = parsed._replace(query='', fragment='')
+
+        # Clean up any double-slashes in the path
+        path = re.sub(r'/+', '/', parsed.path)
+
+        # Remove trailing slash if path is not just "/"
+        # (So "http://site.com/" remains "/", but "http://site.com/foo/" becomes "/foo")
+        if path.endswith('/') and path != '/':
+            path = path[:-1]
+
+        parsed = parsed._replace(path=path)
+        # Final normalized signature
+        sig = parsed.geturl()
+        # ----------------------------------------------------------
+
+        # If we've visited this normalized page, skip
         if sig in visited:
             continue
-        visited.add(sig)        
-        visited.add(u)
+        visited.add(sig)
 
-        ext = Path(urllib.parse.urlparse(u).path).suffix.lstrip('.').lower()
+        # Check if it's a static extension (jpg, css, etc.)
+        ext = Path(parsed.path).suffix.lstrip('.').lower()
         if ext in static_exts:
             continue
 
@@ -1154,78 +1211,101 @@ def crawl_static(root, cap, depth=0, visited=None):
 
         ct = (r.headers.get("content-type","") or "").lower()
         if "javascript" in ct:
-            # parse subrequests from JS
+            # Possibly parse JS for more endpoints
             for jurl in mine_js(u, host):
-                if jurl not in visited:
+                # Normalize jurl the same way for BFS
+                js_sig = jurl.lower()
+                js_parsed = urllib.parse.urlparse(js_sig)._replace(query='', fragment='')
+                js_path = re.sub(r'/+', '/', js_parsed.path)
+                if js_path.endswith('/') and js_path != '/':
+                    js_path = js_path[:-1]
+                js_parsed = js_parsed._replace(path=js_path)
+                js_sig = js_parsed.geturl()
+
+                if js_sig not in visited:
                     queue.append(jurl)
             continue
 
         if "html" not in ct and not u.endswith(".html"):
-            # skip non-HTML
             continue
 
-        # parse HTML
+        # Extract forms/links
         new_targets = parse_html_forms_links(u, r.text)
         for nt in new_targets:
-            if nt.get("url") and nt["url"].lower() not in visited:
-                queue.append(nt["url"])
-            if "iframe" in nt:
-                if depth < args.nested_depth:
-                    queue.append(nt["iframe"])
-            else:
-                if nt.get("url"):
-                    results.append(nt)
-                    if nt["url"] not in visited:
-                        queue.append(nt["url"])
+            link_url = nt.get("url") or nt.get("iframe")
+            if not link_url:
+                continue
+
+            # The BFS's "seen" set includes method + param list
+            mth = nt.get("method", "GET").upper()
+            params = nt.get("params", [])
+            key = f"{mth}:{link_url}:{','.join(params)}"
+
+            if key not in seen:
+                seen.add(key)
+                # Add to final results for fuzzing
+                results.append(nt)
+
+                # Also queue for BFS if we haven't visited its normalized version
+                link_sig = link_url.lower()
+                link_parsed = urllib.parse.urlparse(link_sig)._replace(query='', fragment='')
+                link_path = re.sub(r'/+', '/', link_parsed.path)
+                if link_path.endswith('/') and link_path != '/':
+                    link_path = link_path[:-1]
+                link_parsed = link_parsed._replace(path=link_path)
+                link_sig = link_parsed.geturl()
+
+                if link_sig not in visited:
+                    queue.append(link_url)
 
     return results
 
-def url_signature(method: str, url: str) -> str:
-    return f"{method}:{url.split('?')[0].lower()}"
+
 
 def crawl_dynamic(root):
-    """Intercept XHR/fetch calls by navigating in a headless browser (Playwright)."""
+    """
+    Intercept XHR/fetch calls by navigating in a headless browser (Playwright),
+    deduplicating on URL so each endpoint is only captured once.
+    """
     if not sync_playwright:
         return []
 
     found = []
-    seen = set()
+    seen = set()  # raw URL dedupe
     host = urllib.parse.urlparse(root).netloc.lower()
 
     try:
         with sync_playwright() as p:
             br = p.chromium.launch(
                 headless=not args.headed,
-                args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"]
+                args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
             )
             ctx = br.new_context(ignore_https_errors=True, user_agent=UserAgent().random)
             page = ctx.new_page()
 
             def on_req(req):
-                u = req.url
+                u = req.url.split("?", 1)[0]
                 if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
                     return
                 seen.add(u)
+
                 m = req.method.upper()
-                hd = req.headers.get("content-type","").lower()
-                is_json = ("json" in hd or "graph" in hd)
+                hdr = req.headers.get("content-type", "").lower()
+                is_json = "json" in hdr or "graph" in hdr
+
                 try:
                     data = json.loads(req.post_data or "{}")
+                    params = list(data.keys())
                 except:
-                    data = {}
-                qs = urllib.parse.urlparse(u).query
-                qs_params = list(urllib.parse.parse_qs(qs).keys()) if qs else []
-
-                param_names = list(data.keys()) if data else qs_params
-                if not param_names:
-                    param_names = ["payload"]
+                    qs = urllib.parse.urlparse(req.url).query
+                    params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
 
                 found.append({
-                    "url": u.split("?",1)[0],
-                    "method": m if m in ("POST","PUT") else "GET",
-                    "params": param_names,
+                    "url": u,
+                    "method": m if m in ("POST", "PUT") else "GET",
+                    "params": params,
                     "json": is_json,
-                    "template": data
+                    "template": data if is_json else {}
                 })
 
             page.on("request", on_req)
@@ -1239,10 +1319,34 @@ def crawl_dynamic(root):
 
     return found
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 #                          FUZZING (HTTP & WEBSOCKETS)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def normalize_url(u: str) -> str:
+    """
+    Normalize a URL so the crawler doesn't treat
+    '/?' vs. '/' vs. '/index.php?' as different.
+    """
+    parsed = urllib.parse.urlparse(u)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+
+    # Normalize the path: remove double-slashes, remove trailing slash if path not just '/'
+    path = re.sub(r'/+', '/', parsed.path)
+    if not path.endswith('/') and '.' not in path.split('/')[-1] and path != '/':
+        path += '/'
+
+    # Strip query and fragment for BFS to treat them as one resource.
+    new_parsed = parsed._replace(
+        scheme=scheme,
+        netloc=netloc,
+        path=path,
+        query='',       # remove query so we don't re-crawl same path with empty or identical query
+        fragment=''     # remove fragment
+    )
+    return new_parsed.geturl()
+
 
 def set_deep(obj, path, val):
     """Set a nested property in a dict or list (like foo.bar[2].baz = val)."""
@@ -1488,22 +1592,18 @@ def fuzz_ws(t: Dict[str, Any]):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def detect_waf(url: str) -> str:
-    sigs = {
-        "cloudflare": ["__cf_bm","cf-ray","cloudflare ray id"],
-        "akamai":     ["akamai","akamaighost"],
-        "sucuri":     ["sucuri_cloudproxy_uuid","access denied - sucuri"],
-        "imperva":    ["visid_incap_","incapsula","imperva"],
-    }
+    """
+    Use WafW00F to fingerprint the WAF/CDN protecting `url`. 
+    Returns the WAF name or "unknown".
+    """
     try:
-        r = SESSION.get(url, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
-        t = r.text.lower()
-        for n, pats in sigs.items():
-            if any(p in t for p in pats):
-                return n
-    except:
-        pass
-    return "unknown"
-
+        engine = WafW00F(url)
+        engine.run()                 # perform the detection
+        name = engine.get_waf_name() # e.g. 'Cloudflare', 'Akamai', etc.
+        return name or "unknown"
+    except Exception as e:
+        dbg(f"[detect_waf: error] {e}")
+        return "unknown"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #                       MULTI-SESSION STORED XSS
@@ -1583,33 +1683,29 @@ def main():
     for root in roots:
         logging.info(f"├─▶ Crawling: {root}")
 
-        # 1) Basic static crawling
+        # 1) Static crawling
         static_targets = crawl_static(root, args.max_pages, depth=1)
-
-        # 2) Basic dynamic crawling
+        # 2) Dynamic crawling
         dynamic_targets = crawl_dynamic(root)
-
-        # 3) SPA simulation (if requested)
+        # 3) SPA simulation
         spa_targets = []
         if args.simulate_spa:
             spa_targets = spa_dynamic_crawl(root)
 
-        # Combine
         all_targets = static_targets + dynamic_targets + spa_targets
 
-        # 4) GraphQL fuzz (if endpoint looks like /graphql or user wants coverage)
-        #    We'll do a naive check anyway
+        # GraphQL fuzz
         if "graphql" in root.lower() or "/graphql" in root.lower():
             fuzz_graphql(root)
 
-        # If multi-session stored
+        # Multi-session stored
         if args.multi_session and (mode == "stored" or mode == "all"):
             multi_session_stored_check(static_targets)
 
-        # If normal stored
+        # Single-session stored
         if mode == "stored" and not args.multi_session:
             for t in static_targets:
-                if t["method"] in ("POST","PUT") and not t.get("json", False):
+                if t.get("method") in ("POST","PUT") and not t.get("json", False):
                     for pay in all_stored_payloads:
                         try:
                             cs = rotate_csrf_token(SESSION, t["url"], args.csrf_field) or ""
@@ -1617,30 +1713,38 @@ def main():
                             if cs:
                                 data[args.csrf_field] = cs
                             SESSION.post(
-                                t["url"],
-                                data=data,
-                                headers=random_headers(),
-                                timeout=HTTP_TIMEOUT,
-                                verify=False
+                                t["url"], data=data,
+                                headers=random_headers(t["url"]),
+                                timeout=HTTP_TIMEOUT, verify=False
                             )
-                            # Then check
                             if verify(t["url"], "GET", {}, False):
                                 log_hit(t["url"], "STORED", pay, t["params"])
                         except Exception as ex:
                             dbg(f"[stored] {ex}")
 
+        # Reflected/blind/all modes
         elif mode in ("reflected","blind","all"):
-            http_targets = [x for x in all_targets if not x["url"].startswith(("ws://","wss://"))]
-            ws_targets   = [x for x in all_targets if x["url"].startswith(("ws://","wss://"))]
+            # Split HTTP vs WS
+            http_targets = [t for t in all_targets if not t["url"].startswith(("ws://","wss://"))]
+            ws_targets = [t for t in all_targets if t["url"].startswith(("ws://","wss://"))]
 
+            # Deduplicate HTTP targets
+            uniq = {}
+            for t in http_targets:
+                params = t.get("params", [])
+                key = f"{t['method']}:{t['url']}:{','.join(sorted(params))}"
+                if key not in uniq:
+                    uniq[key] = t
+            http_targets = list(uniq.values())
+
+            # Fuzz
             with ThreadPoolExecutor(max_workers=args.threads) as pool:
-                for t_ in http_targets:
-                    pool.submit(fuzz_http, t_)
-                # Also attempt chunked approach for each
-                for t_ in http_targets:
-                    pool.submit(fuzz_http, t_, use_chunked=True)
-                for w_ in ws_targets:
-                    pool.submit(fuzz_ws, w_)
+                for t in http_targets:
+                    pool.submit(fuzz_http, t)
+                for t in http_targets:
+                    pool.submit(fuzz_http, t, use_chunked=True)
+                for w in ws_targets:
+                    pool.submit(fuzz_ws, w)
 
     logging.info(f"└─ Findings saved → {LOGFILE.resolve()}")
     if SARIF_OUTPUT_FILE:
