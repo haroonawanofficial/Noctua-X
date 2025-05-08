@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # =============================================================================
-# RazKash 𝕏SS AI Fuzzer · v9.4
-# Author : Haroon Ahmad Awan · CyberZeus | haroon@cyberzeus.pk
+# RazKash 𝕏SS AI Fuzzer · v9.4 Enterprise
+# Author : Haroon Ahmad Awan · CyberZeus (haroon@cyberzeus.pk)
 # =============================================================================
+
 
 import os
 import re
@@ -56,10 +57,10 @@ except ImportError:
 #                              CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-VERSION            = "9.4-omni-enterprise (2025-05-10, merged build)"
+VERSION            = "9.4 Enterprise"
 MODEL              = "microsoft/codebert-base"
 DNSLOG_DOMAIN      = "ugxllx.dnslog.cn"
-LOGFILE            = Path("razkash_findings.md")
+LOGFILE            = Path("razkash_xss_findings.md")
 
 TOP_K              = 7
 DEF_THREADS        = 16
@@ -578,7 +579,7 @@ all_stored_payloads = list(set(stored_payloads_v1 + stored_payloads_v2))
 #                        ERROR DETECTION / PATTERNS
 # ─────────────────────────────────────────────────────────────────────────────
 
-SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|unclosed quotation|InnoDB|PostgreSQL|Error|ERROR|error )", re.I)
+SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|Error:|MySQL server version for the right syntax to use near|SQL syntax|unclosed quotation|InnoDB|PostgreSQL|Error|ERROR|error )", re.I)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -588,117 +589,130 @@ SQL_ERROR_RE = re.compile(r"(SQL syntax|MySQL|syntax error|unclosed quotation|In
 # ─────────────────────────────────────────────────────────────────────────────
 
 def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
-    """Launch a headless/headed browser to detect script events, using advanced hooking.
-       Takes a screenshot before and after, logs reason on window._xss_reason if triggered.
     """
-    if not sync_playwright:
-        return False
+    Launch a headless/headed browser to detect script events, using advanced hooking.
+    Takes a screenshot before and after, logs reason on window._xss_reason if triggered,
+    and — when triggered — appends an entry into LOGFILE (razkash_findings.md).
+    Falls back to a simple reflected-payload check if Playwright fails.
+    """
+    # Advanced Playwright-based detection
+    if sync_playwright:
+        import hashlib
+        screenshot_dir = Path("screenshots")
+        screenshot_dir.mkdir(exist_ok=True)
 
-    import hashlib
-    screenshot_dir = Path("screenshots")
-    screenshot_dir.mkdir(exist_ok=True)
+        signature = hashlib.md5((url + json.dumps(data, sort_keys=True)).encode()).hexdigest()[:8]
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=not args.headed,
+                    args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
+                )
+                ctx = browser.new_context(
+                    ignore_https_errors=True,
+                    user_agent=UserAgent().random
+                )
+                page = ctx.new_page()
 
-    # Create a small hash of the request
-    signature = hashlib.md5((url + json.dumps(data, sort_keys=True)).encode()).hexdigest()[:8]
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=not args.headed,
-                args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
-            )
-            ctx = browser.new_context(
-                ignore_https_errors=True,
-                user_agent=UserAgent().random
-            )
-
-            page = ctx.new_page()
-
-            # Inject hooking script
-            page.add_init_script("""
-                window._xss_triggered = false;
-                window._xss_reason = "none";
-
-                function mark(reason){
-                    window._xss_triggered = true;
-                    window._xss_reason = reason || "unknown";
-                }
-
-                ['alert','confirm','prompt'].forEach(fn => {
-                    const orig = window[fn];
-                    window[fn] = (...args) => {
-                        mark(fn);
-                        return orig(...args);
-                    };
-                });
-
-                document.addEventListener('securitypolicyviolation', () => mark('csp-violation'));
-
-                const mo = new MutationObserver(muts => {
-                    muts.forEach(m => {
-                        if(m.addedNodes){
+                # Inject hooking script
+                page.add_init_script("""
+                    window._xss_triggered = false;
+                    window._xss_reason = "none";
+                    function mark(reason){
+                        window._xss_triggered = true;
+                        window._xss_reason = reason || "unknown";
+                    }
+                    ['alert','confirm','prompt'].forEach(fn => {
+                        const orig = window[fn];
+                        window[fn] = (...args) => { mark(fn); return orig(...args); };
+                    });
+                    document.addEventListener('securitypolicyviolation', () => mark('csp-violation'));
+                    new MutationObserver(muts => {
+                        muts.forEach(m => {
                             m.addedNodes.forEach(n => {
-                                if(n.outerHTML && /(script|onerror|alert|iframe|svg)/i.test(n.outerHTML)){
+                                if(n.outerHTML && /(script|onerror|iframe|svg)/i.test(n.outerHTML)) {
                                     mark('mutation-observer');
                                 }
                             });
-                        }
-                    });
-                });
-                mo.observe(document.documentElement, {childList:true,subtree:true});
+                        });
+                    }).observe(document.documentElement, {childList:true,subtree:true});
+                    setTimeout(() => {
+                        const s = document.createElement('script');
+                        s.innerHTML = 'mark("inline-script-test")';
+                        document.body.appendChild(s);
+                        const ifr = document.createElement('iframe');
+                        ifr.srcdoc = '<script>parent.mark("iframe-srcdoc")</script>';
+                        document.body.appendChild(ifr);
+                    }, 1500);
+                """)
 
-                // Attempt delayed injection to see if we can detect race-based changes
-                setTimeout(() => {
-                    const s = document.createElement('script');
-                    s.innerHTML = 'mark("inline-script-test")';
-                    document.body.appendChild(s);
+                page.on("dialog", lambda d: (d.dismiss(), page.evaluate("mark('dialog')")))
 
-                    const ifr = document.createElement('iframe');
-                    ifr.srcdoc = '<script>parent.mark(\"iframe-srcdoc\")</script>';
-                    document.body.appendChild(ifr);
-                }, 1500);
-            """)
+                # Perform the actual request
+                if method.upper() == "GET":
+                    qs = urllib.parse.urlencode(data)
+                    full_url = f"{url}?{qs}" if qs else url
+                    page.goto(full_url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+                else:
+                    page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+                    hdrs = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
+                    body = json.dumps(data) if is_json else urllib.parse.urlencode(data)
+                    page.evaluate("(u,h,b) => fetch(u, {method:'POST',headers:h,body:b})", url, hdrs, body)
+                    page.wait_for_timeout(1500)
 
-            page.on("dialog", lambda d: (d.dismiss(), page.evaluate("mark('dialog')")))
+                # Screenshots
+                before_file = screenshot_dir / f"{signature}_before.png"
+                page.screenshot(path=str(before_file), full_page=True)
+                page.wait_for_timeout(HEADLESS_WAIT)
+                after_file  = screenshot_dir / f"{signature}_after.png"
+                page.screenshot(path=str(after_file), full_page=True)
 
-            # Perform the actual request
-            if method.upper() == "GET":
-                qs = urllib.parse.urlencode(data)
-                full_url = f"{url}?{qs}" if qs else url
-                page.goto(full_url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+                triggered = page.evaluate("window._xss_triggered")
+                reason    = page.evaluate("window._xss_reason")
+                dbg(f"[verify] triggered={triggered}, reason={reason}, screenshots=({before_file.name},{after_file.name})")
+
+                # If we detected XSS, also append to your Markdown report
+                if triggered:
+                    entry = f"- **XSS** {method} `{url}` reason={reason} screenshots=({before_file.name},{after_file.name})\n"
+                    with log_lock:
+                        old = LOGFILE.read_text("utf-8") if LOGFILE.exists() else ""
+                        LOGFILE.write_text(old + entry, "utf-8")
+                    logging.info(entry.strip())
+
+                page.close()
+                ctx.close()
+                browser.close()
+                return bool(triggered)
+
+        except Exception as ex:
+            dbg(f"[verify: playwright error] {ex}")
+            # fall through to reflected check
+
+    # Fallback: simple reflected-payload check in HTTP response
+    try:
+        if method.upper() == "GET":
+            resp = SESSION.get(url, params=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        else:
+            if is_json:
+                resp = SESSION.post(url, json=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
             else:
-                # POST / etc. We load the base URL first, then do a fetch
-                page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-                hdrs = {"Content-Type": "application/json"} if is_json else {"Content-Type": "application/x-www-form-urlencoded"}
-                body = json.dumps(data) if is_json else urllib.parse.urlencode(data)
-                page.evaluate("(u,h,b) => fetch(u, {method:'POST',headers:h,body:b})", url, hdrs, body)
-                # small wait
-                page.wait_for_timeout(1500)
-
-            # Screenshot before final wait
-            before_file = screenshot_dir / f"{signature}_before.png"
-            page.screenshot(path=str(before_file), full_page=True)
-
-            # Wait a bit more
-            page.wait_for_timeout(HEADLESS_WAIT)
-
-            after_file = screenshot_dir / f"{signature}_after.png"
-            page.screenshot(path=str(after_file), full_page=True)
-
-            triggered = page.evaluate("window._xss_triggered")
-            reason = page.evaluate("window._xss_reason")
-
-            dbg(f"[verify] triggered={triggered}, reason={reason}, screenshots=({before_file.name}, {after_file.name})")
-
-            page.close()
-            ctx.close()
-            browser.close()
-
-            return bool(triggered)
-
+                resp = SESSION.post(url, data=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+        body = resp.text or ""
+        for v in (data.values() if isinstance(data, dict) else []):
+            if isinstance(v, str) and v in body:
+                dbg("[verify: reflected] payload found in response")
+                # also log to Markdown
+                entry = f"- **XSS** {method} `{url}` reflected-payload={v[:50]}...\n"
+                with log_lock:
+                    old = LOGFILE.read_text("utf-8") if LOGFILE.exists() else ""
+                    LOGFILE.write_text(old + entry, "utf-8")
+                logging.info(entry.strip())
+                return True
     except Exception as ex:
-        dbg(f"[verify error] {ex}")
-        return False
+        dbg(f"[verify: fallback error] {ex}")
+
+    return False
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -936,8 +950,9 @@ def spa_dynamic_crawl(root, max_clicks=20):
             def on_req(req):
                 u = req.url
                 netloc = urllib.parse.urlparse(u).netloc.lower()
-                if netloc == host and u not in seen_req:
-                    seen_req.add(u)
+                sig = f"{req.method}:{u.split('?')[0]}"
+                if netloc == host and sig not in seen_req:
+                    seen_req.add(sig)
                     m = req.method.upper()
                     hd = req.headers
                     is_json = ("application/json" in hd.get("content-type","").lower())
@@ -1114,8 +1129,10 @@ def crawl_static(root, cap, depth=0, visited=None):
 
     while queue and len(visited) < cap:
         u = queue.pop(0)
-        if u in visited:
+        sig = u.split("?")[0].lower()
+        if sig in visited:
             continue
+        visited.add(sig)        
         visited.add(u)
 
         ext = Path(urllib.parse.urlparse(u).path).suffix.lstrip('.').lower()
@@ -1144,6 +1161,8 @@ def crawl_static(root, cap, depth=0, visited=None):
         # parse HTML
         new_targets = parse_html_forms_links(u, r.text)
         for nt in new_targets:
+            if nt.get("url") and nt["url"].lower() not in visited:
+                queue.append(nt["url"])
             if "iframe" in nt:
                 if depth < args.nested_depth:
                     queue.append(nt["iframe"])
@@ -1154,6 +1173,9 @@ def crawl_static(root, cap, depth=0, visited=None):
                         queue.append(nt["url"])
 
     return results
+
+def url_signature(method: str, url: str) -> str:
+    return f"{method}:{url.split('?')[0].lower()}"
 
 def crawl_dynamic(root):
     """Intercept XHR/fetch calls by navigating in a headless browser (Playwright)."""
