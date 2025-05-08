@@ -592,7 +592,7 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
     """
     Launch a headless/headed browser to detect script events, using advanced hooking.
     Takes a screenshot before and after, logs reason on window._xss_reason if triggered,
-    and — when triggered — appends an entry into LOGFILE (razkash_findings.md).
+    and — when triggered — appends an entry into LOGFILE (razkash_xss_findings.md).
     Falls back to a simple reflected-payload check if Playwright fails.
     """
     # Advanced Playwright-based detection
@@ -646,7 +646,8 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
                     }, 1500);
                 """)
 
-                page.on("dialog", lambda d: (d.dismiss(), page.evaluate("mark('dialog')")))
+                # ─── FIXED: only dismiss dialogs, do NOT call undefined mark()
+                page.on("dialog", lambda d: d.dismiss())
 
                 # Perform the actual request
                 if method.upper() == "GET":
@@ -660,20 +661,23 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
                     page.evaluate("(u,h,b) => fetch(u, {method:'POST',headers:h,body:b})", url, hdrs, body)
                     page.wait_for_timeout(1500)
 
-                # Screenshots
+                # Take screenshots before + after
                 before_file = screenshot_dir / f"{signature}_before.png"
                 page.screenshot(path=str(before_file), full_page=True)
                 page.wait_for_timeout(HEADLESS_WAIT)
-                after_file  = screenshot_dir / f"{signature}_after.png"
+                after_file = screenshot_dir / f"{signature}_after.png"
                 page.screenshot(path=str(after_file), full_page=True)
 
+                # Check whether our init-script set the flag
                 triggered = page.evaluate("window._xss_triggered")
                 reason    = page.evaluate("window._xss_reason")
                 dbg(f"[verify] triggered={triggered}, reason={reason}, screenshots=({before_file.name},{after_file.name})")
 
-                # If we detected XSS, also append to your Markdown report
                 if triggered:
-                    entry = f"- **XSS** {method} `{url}` reason={reason} screenshots=({before_file.name},{after_file.name})\n"
+                    entry = (
+                        f"- **XSS** {method} `{url}` "
+                        f"reason={reason} screenshots=({before_file.name},{after_file.name})\n"
+                    )
                     with log_lock:
                         old = LOGFILE.read_text("utf-8") if LOGFILE.exists() else ""
                         LOGFILE.write_text(old + entry, "utf-8")
@@ -688,7 +692,7 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
             dbg(f"[verify: playwright error] {ex}")
             # fall through to reflected check
 
-    # Fallback: simple reflected-payload check in HTTP response
+    # ─── Fallback: simple reflected-payload check in HTTP response
     try:
         if method.upper() == "GET":
             resp = SESSION.get(url, params=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
@@ -697,21 +701,23 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
                 resp = SESSION.post(url, json=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
             else:
                 resp = SESSION.post(url, data=data, headers=random_headers(), timeout=HTTP_TIMEOUT, verify=False)
+
         body = resp.text or ""
         for v in (data.values() if isinstance(data, dict) else []):
             if isinstance(v, str) and v in body:
                 dbg("[verify: reflected] payload found in response")
-                # also log to Markdown
                 entry = f"- **XSS** {method} `{url}` reflected-payload={v[:50]}...\n"
                 with log_lock:
                     old = LOGFILE.read_text("utf-8") if LOGFILE.exists() else ""
                     LOGFILE.write_text(old + entry, "utf-8")
                 logging.info(entry.strip())
                 return True
+
     except Exception as ex:
         dbg(f"[verify: fallback error] {ex}")
 
     return False
+
 
 
 
