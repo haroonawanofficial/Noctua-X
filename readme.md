@@ -126,7 +126,7 @@
 
 ## Installation
 ```bash
-git clone https://github.com/your‑org/Noctua.git
+git clone https://github.com/haroonawanofficial/Noctua.git
 cd Noctua
 
 python3 -m venv venv && source venv/bin/activate
