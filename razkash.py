@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# noctura 𝕏SS AI Fuzzer · v9.4 Enterprise
+# Noctua 𝕏SS AI Fuzzer · v9.4 Enterprise
 # Author : Haroon Ahmad Awan · CyberZeus (haroon@cyberzeus.pk)
 # =============================================================================
 
@@ -58,7 +58,7 @@ except ImportError:
 VERSION            = "9.4 Enterprise"
 MODEL              = "microsoft/codebert-base"
 DNSLOG_DOMAIN      = "ugxllx.dnslog.cn"
-LOGFILE            = Path("noctura_xss_findings.md")
+LOGFILE            = Path("Noctua_xss_findings.md")
 
 TOP_K              = 7
 DEF_THREADS        = 16
@@ -115,7 +115,7 @@ SARIF_OUTPUT_FILE  = None
 #                              ARGUMENTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-ap = argparse.ArgumentParser(description=f"noctura v{VERSION} · Ultimate Merged AI XSS Fuzzer")
+ap = argparse.ArgumentParser(description=f"Noctua v{VERSION} · Ultimate Merged AI XSS Fuzzer")
 mx = ap.add_mutually_exclusive_group()
 mx.add_argument("--reflected", action="store_true", help="Only reflected XSS")
 mx.add_argument("--stored",    action="store_true", help="Only stored XSS")
@@ -849,7 +849,7 @@ def verify(url: str, method: str, data: Any, is_json: bool=False) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if not LOGFILE.exists():
-    LOGFILE.write_text(f"# noctura Findings v{VERSION}\n\n", "utf-8")
+    LOGFILE.write_text(f"# Noctua Findings v{VERSION}\n\n", "utf-8")
 
 _hits = set()
 log_lock = threading.Lock()
@@ -904,7 +904,7 @@ def write_sarif():
         {
           "tool": {
             "driver": {
-              "name": "noctura",
+              "name": "Noctua",
               "version": VERSION,
             }
           },
@@ -1686,7 +1686,7 @@ def main():
         ap.print_help()
         sys.exit(1)
 
-    logging.info(f"\n┌─ noctura AI XSS v{VERSION}")
+    logging.info(f"\n┌─ Noctua AI XSS v{VERSION}")
 
     # Optional WAF detection
     if args.detect_waf:
