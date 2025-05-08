@@ -5,8 +5,7 @@
 ---
 
 ## Key Features
-- AI-Based Context-Aware Fuzzing
-- Turbo-charged 500,000+ uniquepayloads, generated on-the-fly with AI mutation (never seen before)
+- AI-Based Context-Aware Fuzzing uniquepayloads, generated on-the-fly with AI mutation
 - Super-crawler: Walks every same-origin link and scrapes JavaScript (fetch, axios, XHR) to surface hidden APIs
 - Headless Chromium verifier using Playwright — intercepts dialog events and DOM side effects to confirm exploitation
 - Smart protocol probing: HTTP⇆HTTPS, header rotation, timing jitter to evade WAFs and rate limits
