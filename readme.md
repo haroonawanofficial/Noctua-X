@@ -5,74 +5,57 @@
 ---
 
 ## Key Features
-- AI Based
-- Tubro charged 500 000+ unique payloads on the spot, never seen before
-- **Super‑crawler** that walks every same‑origin link & scrapes JavaScript (`fetch`, `axios`, XHR) to surface hidden APIs. 
-- **Headless Chromium verifier** that intercepts `dialog` events and DOM side‑effects to confirm exploitation.  
-- **Smart protocol probing** (HTTP ⇆ HTTPS), header rotation, and human‑like timing to evade WAFs and rate limits.  
-- **High‑performance, multithreaded engine** with depth, page, and thread caps for deterministic fuzzing.  
-- **Lightweight Markdown reporting** (≤ 120 bytes per finding) for painless CI diffing.  
-- Built‑in `--debug` and `--autotest` modes for rapid troubleshooting.
-- Static & Dynamic Crawling (HTML links, JS assets, sitemaps, manifests, Playwright-driven XHR/DOM)  
-- AI-Powered
-- GPU Powered
-- Polyglot & Context-Aware Payloads (HTML, attributes, CSS, SVG/XLink, URLs, templates, WebAssembly, service-worker cache, modern APIs)  
-- Client-Side Template Injection support (AngularJS, Handlebars, Vue, React)  
-- CSP & TrustedTypes Bypass stubs and gadget chains  
-- Blind/OOB XSS via DNSLOG callbacks  
-- WebAssembly & Service-Worker Cache Injection fuzzing  
-- Modern API Fuzzing (WebGPU, WebXR, WebTransport, SharedArrayBuffer)  
-- Edge-Case Encoding & Parsing Quirks (RTL override, HTTP/2 path tricks, MIME-sniffing)  
-- Cross-Protocol & Cross-Origin Chains (file://, ftp://, WebSocket race)  
-- Advanced DOM Clobbering & Prototype Pollution vectors  
-- In-Browser Verification of sink execution via Playwright + injected JSFLAG  
-- HTTP/HTTPS & WebSocket fuzzers in one tool
-- HTML links, `<form>` actions, `<button>` elements  
-- JS asset mining (`fetch`, `XHR.open`, `sourceMappingURL`)  
-- Robots.txt → sitemaps → `<loc>` URLs  
-- PWA manifests (`manifest.json`, `ngsw.json`)  
-- Nested `<iframe>`/`<frame>` crawling (configurable depth)
-- Playwright‐driven interception of XHR/fetch (GET/POST/PUT)  
-- In‐page DOM form and button‐click simulation  
-- SPA route/link‐click automation  
-- Iframe request hooks for JS‐driven content
-- JSON-LD: parse `type="application/ld+json"` blocks, deep‐key payload injection  
-- RDFa/Microdata: `property=`, `itemprop=` attributes fuzzing  
-- GraphQL: detect and fuzz `variables` objects
-- AI - Driven
-- Context-aware JavaScript snippet evolution
-- Hex (`\xHH`), Unicode (`\uHHHH`), URL-quote, Base64  
-- Comment hiding (`a//l//e//r//t(1)`)  
-- RTL override & BOM insertion
-- Legitimate wrapper tags (`<div hidden>`, `<span style=…>`, `<template>`)  
-- Custom FILTER payloads (`<sCrIpT>PAYLOAD</sCrIpT>`, HTML comments, CSS expressions)
-- CSP & TrustedTypes bypass gadgets & inline‐nonce injections  
-- Service Worker cache poisoning  
-- WebAssembly `instantiateStreaming` payloads  
-- Modern APIs: WebGPU, WebXR, WebTransport, BroadcastChannel, SSE  
-- Cross-protocol payloads (`file://`, `ftp://`, HTTP/2 tricks)  
-- DOM Clobbering and Prototype Pollution gadgets  
-- MutationObserver and AST‐style code mutations  
-- JSON-LD, Microdata, RDFa injection
-- DNSLOG callbacks (`fetch('http://…')`)  
-- Timing‐based blind detection via Playwright timeouts
-- JSON body injection into WS messages  
-- Automatic detection of injected marker in responses
-- Headless/Headed Playwright mode (`--headed`)  
-- JSFLAG to trap `innerHTML`, `outerHTML`, `eval`, `Function`, `appendChild`, `MutationObserver`
-- Passive fingerprinting (Cloudflare, Akamai, Imperva, Sucuri, ModSecurity, AWS ALB)  
-- Adaptive header morphing (`X-Random`, `X-Forwarded-For`, `Referer`)  
-- Polymorphic traffic (`--polymorph`) and random header ordering
-- HTTP/2 smuggling & header splitting (future extension)  
-- Chunked/TE encoding & compression injection  
-- Race‐condition fuzzing, deferred event triggers - Auth cookie & CSRF token handling (extendable)  
-- Multi-session stored XSS detection across user roles
-- Markdown log (`razkash_findings.md`)  
-- JSON/SARIF export (future)  
-- Webhook/Slack alert hooks (future)
-- ThreadPoolExecutor with `--threads`  
-- Page‐limit via `--max-pages`  
-- Depth, SPA, iframe, WAF, polymorph, headed flags
+- AI-Based Context-Aware Fuzzing
+- Turbo-charged 500,000+ uniquepayloads, generated on-the-fly with AI mutation (never seen before)
+- Super-crawler: Walks every same-origin link and scrapes JavaScript (fetch, axios, XHR) to surface hidden APIs
+- Headless Chromium verifier using Playwright — intercepts dialog events and DOM side effects to confirm exploitation
+- Smart protocol probing: HTTP⇆HTTPS, header rotation, timing jitter to evade WAFs and rate limits
+- High-performance multithreaded engine — full control over depth, pages, threads
+- Lightweight Markdown reports (≤120 bytes per finding) → CI-ready, version-controllable
+- Built-in --debug and --autotest modes for quick troubleshooting or testbed use
+- Static + Dynamic Crawling: Links, JS assets, sitemaps, manifests, SPAs, Playwright-driven XHR/DOM analysis
+- AI-powered with GPU support 
+- Polyglot & Context-Aware Payloads: HTML, attributes, CSS, SVG, WebAssembly, service-worker, etc.
+- Client-Side Template Injection (AngularJS, Handlebars, Vue, React)
+- CSP & TrustedTypes Bypass gadgets
+- Blind/OOB XSS via DNSLOG beacons
+- WebAssembly & Service-Worker fuzzing
+- Modern API Fuzzing: WebGPU, WebXR, WebTransport, SharedArrayBuffer
+- Encoding & Parsing Quirks: RLO, BOM, HTTP/2 tricks, MIME-sniffing
+- Cross-Protocol Chains: file://, ftp://, WebSocket race, iframe sandbox escapes
+- Advanced DOM Clobbering & Prototype Pollution
+- In-Browser Sink Verification with JSFLAGs and Playwright
+- WebSocket fuzzing + injection and detection
+- HTML Links + <form> + <button> auto extraction
+- JS Asset Mining: fetch, axios, XHR, sourceMappingURL
+- Robots.txt → sitemap.xml → <loc> recursion
+- Manifest.json + nested iframe/frame crawling
+- Playwright request interception & in-page DOM action simulation
+- SPA route and button click automation
+- Iframe JS content hook injection
+- JSON-LD / RDFa / Microdata payload injection
+- GraphQL schema discovery + variable fuzzing
+- AI-Driven JavaScript Snippet Evolution
+- Advanced Encoders: hex, Unicode, base64, ROT13, %URL, CSS hide, BOM, RTL
+- Custom filter payloads: <sCrIpT>PAYLOAD</sCrIpT>, HTML comments, template, etc.
+- CSP/TrustedTypes inline nonce & bypass
+- Service Worker poisoning
+- instantiateStreaming WebAssembly injection
+- DOM & JSAPI Payloads: WebGPU, WebXR, WebTransport, BroadcastChannel, SSE
+- Cross-protocol fuzzing (file://, HTTP/2 smuggling, chunked trick)
+- MutationObserver triggers, Prototype pollution
+- Passive WAF Fingerprinting: Cloudflare, Akamai, Imperva, Sucuri
+- Adaptive header morphing (X-Random, X-Forwarded-For, Referer)
+- Polymorphic traffic via --polymorph, random header ordering
+- WS/HTTP/2 support planned
+- Chunked encoding, compression fuzzing (future)
+- Race-condition fuzzing & deferred triggers
+- CSRF & Auth Cookie handling logic
+- Multi-session stored XSS testing
+- Auto Markdown logging (razkash_findings.md)
+- JSON/SARIF/Slack hooks (future reserved)
+- ThreadPoolExecutor with --threads
+- Page/Depth/WAF/SPAs/Poly/Headed flags
 
 
   
@@ -112,7 +95,32 @@
 - SMIL & SVG animation triggers
 - Blind‑XSS (DNS/WebSocket beacons)
 - Polyglot & multi‑context payloads (HTML+JS+CSS)
-
+- Script Tag Injection: <script>, <script src=...>, nested tags, obfuscated forms
+- Attribute/Event Handler Injection: onload=, onerror=, onmouseover=, onclick=, and custom event payloads
+- Inline JS URI Handlers:javascript:alert(1), data:text/html,..., vbscript:..., mixed casing, whitespaces
+- SVG Namespace & Animation Vectors: <svg onload=...>, <svg><a xlink:href=...>, SMIL-based triggers
+- Iframe/Frame Source Manipulation: <iframe src="javascript:...">, <frame src=...>
+- Media Elements: <video>, <audio>, <object>, <embed>, <source> with onerror, data, src injection
+- MathML & XML Entities: <math>, <annotation>, CDATA-based vectors, <!ENTITY xxe>
+- HTML5 Interactive Tags: <details>, <dialog>, <marquee>, <textarea autofocus onfocus=...>
+- CSS-Based Payloads:style, @import, expression(), list-style-image, animation, and background:url() tricks
+- Meta & Link Tag Injection:<meta http-equiv="refresh" ...>, <link rel="stylesheet" href=javascript:...>
+- DOM-Based Sinks:innerHTML, outerHTML, eval, Function, setTimeout, appendChild, location.hash
+- Shadow DOM Breakouts:Manipulating encapsulated scopes to execute untrusted JS
+- MutationObserver & Race Conditions: Triggering sinks via delayed or timed DOM mutations
+- WebAssembly & dynamic import(): instantiateStreaming(), runtime JS injection within modules
+- JSONP/JS Callback Reflections: Callback injection on API endpoints with ?callback= or ?cb= parameters
+- Template Injection (CSTI): AngularJS, Vue, Handlebars, React (e.g., {{constructor.constructor('alert(1)')()}})
+- JSON-LD / Microdata / RDFa Injection
+- Prototype Pollution & DOM Clobbering
+- CRLF / Header Injection → breaks into headers or scripts
+- RLO / Unicode-Based Payloads (Right-To-Left Override, BOM)
+- Blind XSS (Stored/OOB) via DNSLOG, WebSocket, and Beacon-like callbacks
+- Polyglot Payloads - Multiple-context support for HTML + JS + CSS hybrids
+- Stored, Reflected, DOM, and Blind XSS
+- Cross-Protocol Vectors file://, ftp://, ws://, and iframe sandbox tricks
+- Fuzzing nested or deep keys within JSON requests and GraphQL variables
+- Service Worker Cache Poisoning
 
 ## Installation
 ```bash
