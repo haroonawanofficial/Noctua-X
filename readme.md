@@ -4,6 +4,11 @@
 
 ---
 
+## Download the full PDF
+http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
+
+---
+
 ## Key Features
 ```
 - AI-Based Context-Aware Fuzzing uniquepayloads, generated on-the-fly with AI mutation
