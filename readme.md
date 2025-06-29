@@ -1,9 +1,11 @@
 # v9.5
-## Noctua is Context Aware, Server Aware, Waf Aware and Self Aware
+## Noctua is GPU powered AI Context Aware, Server Aware, and Waf Aware XSS Fuzer
 
 **Todo**
 - Include Art of XSS: The Reinforcement
 - New updates will drop soon
+
+---
   
  **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
