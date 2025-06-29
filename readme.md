@@ -1,4 +1,5 @@
-# Noctua v9.5 - Context Aware, Server Aware, Waf Aware and Self Aware Autonomous XSS Fuzzer
+# v9.5
+## Noctua is Context Aware, Server Aware, Waf Aware and Self Aware
 
 **Todo**
 - Include Art of XSS: The Reinforcement
