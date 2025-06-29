@@ -1,5 +1,9 @@
-# Noctua v9.2 — Turbo Charged GPU Powered - AI XSS Fuzzer
+# Noctua v9.5 - Context Aware, Server Aware, Waf Aware and Self Aware Autonomous XSS Fuzzer
 
+**Todo**
+- Include Art of XSS: The Reinforcement
+- New updates will drop soon
+  
  **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
 ---
