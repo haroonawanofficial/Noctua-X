@@ -1,9 +1,17 @@
 # Noctua v9.5
-## Context Aware, Server Aware, and Waf Aware Fuzzer
+## Context Aware, Server Aware, Self Reinforcement and Waf Aware AI Based XSS Fuzzer
 
-**Todo**
-- Include Art of XSS: The Reinforcement
-- New updates will drop soon
+**Added in version 10.0**
+# Noctua AI XSS Fuzzer: v9.4 vs v9.5 RL Upgrade Comparison
+
+| **Feature**             | **old**                                                                 | **new**                                                                 | **Analysis of the Upgrade**                                                                                                                                                        |
+|-------------------------|-----------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Core Fuzzing Logic**  | Randomized / Procedural                                                                       | Adaptive / Learning-Based                                                                  | Biggest improvement. v9.5 uses Reinforcement Learning to remember what works per target and adapts dynamically, unlike v9.4’s stateless random selection.                         |
+| **Payload Selection**   | Picks randomly from `BASE_PAYLOADS`, optional AI mutation or polymorphism.                   | Uses `agent.choose(param)` (ε-greedy Q-learning strategy).                                 | v9.5 focuses on high-reward payloads while still exploring new ones, drastically improving efficiency and hit rate.                                                                 |
+| **Context-Awareness**   | Optional WAF spoofing (`--detect-waf`), but not tied to payload logic.                        | Builds `(waf, server, param_type)` state for each parameter; guides payload selection.     | v9.5 learns what payloads work on Nginx but fail on Cloudflare etc. Allows adaptive behavior by server type and parameter class.                                                    |
+| **Feedback Loop**       | None – no learning, each run is independent.                                                  | Explicit reward system: R_CONFIRM, R_BLOCK, R_SERROR etc.                                 | Enables learning. v9.5 continuously improves during scan by reinforcing successful actions and penalizing failed or blocked attempts.                                               |
+| **Knowledge & Memory**  | Stateless – starts fresh every run.                                                           | Persistent – can save and reload Q-table (`--qtable-file`) for memory between scans.       | Huge leap in intelligence. The fuzzer becomes smarter over time and can transfer learning across targets.                                                                          |
+
 
 ---
   
