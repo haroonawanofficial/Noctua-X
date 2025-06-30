@@ -1,4 +1,4 @@
-# Noctua v10: THE ART OF XSS - THE REINFORCEMENT
+# ART OF XSS - THE REINFORCEMENT
 
 ## Context Aware, Server Aware, Self Reinforcement and Waf Aware AI Based XSS Fuzzer
 
