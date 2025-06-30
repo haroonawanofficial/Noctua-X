@@ -1,7 +1,7 @@
 # Noctua v10: THE ART OF XSS - THE REINFORCEMENT
 
 ## Context Aware, Server Aware, Self Reinforcement and Waf Aware AI Based XSS Fuzzer
->> AI Powered discovers zero‑day XSS and verifying each hit in a real browser.
+
 | **Feature**             | **old**                                                                 | **new**                                                                 | **Analysis of the Upgrade**                                                                                                                                                        |
 |-------------------------|-----------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Core Fuzzing Logic**  | Randomized / Procedural                                                                       | Adaptive / Learning-Based                                                                  | Biggest improvement. v10.0 uses Reinforcement Learning to remember what works per target and adapts dynamically, unlike v9.4’s stateless random selection.                         |
