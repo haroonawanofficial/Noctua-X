@@ -1,8 +1,7 @@
-# Noctua v10.0
+# Noctua v10: THE ART OF XSS - THE REINFORCEMENT
+
 ## Context Aware, Server Aware, Self Reinforcement and Waf Aware AI Based XSS Fuzzer
-
-**Added in version 10.0**
-
+> AI Powered discovers zero‑day XSS and verifying each hit in a real browser.
 | **Feature**             | **old**                                                                 | **new**                                                                 | **Analysis of the Upgrade**                                                                                                                                                        |
 |-------------------------|-----------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Core Fuzzing Logic**  | Randomized / Procedural                                                                       | Adaptive / Learning-Based                                                                  | Biggest improvement. v10.0 uses Reinforcement Learning to remember what works per target and adapts dynamically, unlike v9.4’s stateless random selection.                         |
@@ -11,10 +10,6 @@
 | **Feedback Loop**       | None – no learning, each run is independent.                                                  | Explicit reward system: R_CONFIRM, R_BLOCK, R_SERROR etc.                                 | Enables learning. v10.0 continuously improves during scan by reinforcing successful actions and penalizing failed or blocked attempts.                                               |
 | **Knowledge & Memory**  | Stateless – starts fresh every run.                                                           | Persistent – can save and reload Q-table (`--qtable-file`) for memory between scans.       | Huge leap in intelligence. The fuzzer becomes smarter over time and can transfer learning across targets.                                                                          |
 
-
----
-  
- **AI Powered discovers zero‑day XSS and verifying each hit in a real browser.**
 
 ---
 
