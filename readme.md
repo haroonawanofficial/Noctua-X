@@ -1,6 +1,6 @@
-# NOCTUA
+# Next Generation Fuzzer is Here!
 
-## Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based XSS Fuzzer
+## Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer
 
 | **Feature**             | **old**                                                                 | **new**                                                                 | **Analysis of the Upgrade**                                                                                                                                                        |
 |-------------------------|-----------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
