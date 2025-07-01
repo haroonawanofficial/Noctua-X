@@ -1,4 +1,4 @@
-# Next Generation XSS Fuzzer!
+# Next Generation XSS Fuzzer
 
 ## Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer
 
