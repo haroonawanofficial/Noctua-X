@@ -1,4 +1,4 @@
-# ART OF XSS - THE REINFORCEMENT
+# NOCTUA
 
 ## Context Aware, Server Aware, Self Reinforcement and Waf Aware AI Based XSS Fuzzer
 
