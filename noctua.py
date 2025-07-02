@@ -4,13 +4,7 @@
 # -----------------------------------------------------------------------------
 #  Author   : Haroon Ahmad Awan  · CyberZeus  <haroon@cyberzeus.pk>
 #  Licence  : GPL‑3.0
-#  Summary  : Enterprise‑grade XSS fuzzer featuring
-#               • Reinforcement‑Learning payload selection (ε‑greedy Q‑learning)
-#               • WAF / server banner‑aware state modelling
-#               • Transformer‑based payload invention (“MASK” tokens → CodeBERT)
-#               • Full v10 feature‑set retained (Playwright verification, blind/
-#                 stored, polymorphic obfuscation, chunked‑encoding, etc.)
-# =============================================================================
+#   =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
 #                           STANDARD & 3rd‑PARTY IMPORTS
