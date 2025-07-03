@@ -48,11 +48,13 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 
 ---
 
-## 🎯 **Turning "Misses" into "Hits"**  
+## **Turning "Misses" into "Hits"**  
 Noctua’s **Reinforcement Learning (RL)** and **polymorphic payloads** ensure:  
 ✔ **Higher success rate** against WAFs.  
 ✔ **Catches DOM XSS** others miss.  
-✔ **Self-improving** over time (Q-learning).  ---
+✔ **Self-improving** over time (Q-learning) with reward system, making extreme success rate
+
+---
 
 ## Download the full PDF
 http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
