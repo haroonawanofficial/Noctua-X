@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="https://i.ibb.co/TqMDXDFr/Copilot-20250703-132618.png" alt="Noctua XSS Tool Comparison" width="800"><br>
-</p>
+![Noctua XSS Tool Comparison](https://i.ibb.co/TqMDXDFr/Copilot-20250703-132618.png)
+
+
 
 
 
