@@ -21,7 +21,7 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 | **WebSocket Testing** | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | **WAF Bypass Rate** | **~85%** (Adaptive) | ~50% | ~65% | ~40% |
 | **Stored XSS Detection** | ✅ Multi-session | ❌ No | ❌ No | ❌ No |
-| **False Positives** | **Lowest** (Verification execution technology) | Medium | Medium | High |
+| **False Positives** | **Lowest** (verified execution) | Medium | Medium | High |
 
 ---
 
