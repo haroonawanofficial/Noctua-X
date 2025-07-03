@@ -1,8 +1,7 @@
-<div align="center">
-  <img src="https://i.ibb.co/TqMDXDFr/Copilot-20250703-132618.png" alt="Noctua XSS Tool Comparison" width="800">
-  <br>
-  <em>Comprehensive benchmark showing Noctua's superior WAF bypass and detection capabilities</em>
-</div>
+<p align="center">
+  <img src="https://i.ibb.co/TqMDXDFr/Copilot-20250703-132618.png" alt="Noctua XSS Tool Comparison" width="800"><br>
+</p>
+
 
 
 ---
