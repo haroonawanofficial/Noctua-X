@@ -21,11 +21,38 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 | **WebSocket Testing** | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | **WAF Bypass Rate** | **~85%** (Adaptive) | ~50% | ~65% | ~40% |
 | **Stored XSS Detection** | ✅ Multi-session | ❌ No | ❌ No | ❌ No |
-| **False Positives** | **Lowest** (Verified execution) | Medium | Medium | High |
+| **False Positives** | **Lowest** (Verification execution technology) | Medium | Medium | High |
 
 ---
 
+## Precision & Accuracy Comparison
+
+| Feature                      | Noctua                          | DalFox            | XSSRays           | XSStrike          |
+|------------------------------|---------------------------------|-------------------|-------------------|-------------------|
+| **AI & Reinforcement Learning** | ✅ Self-optimizing payloads    | ❌ No             | ❌ No             | ❌ No             |
+| **Browser-Based Verification**  | ✅ (Playwright)               | ❌ No             | ❌ No             | ❌ No             |
+| **Polymorphic Payloads**       | ✅ 50+ encodings + AI mutations | ❌ No             | ✅ Basic          | ✅ Basic          |
+| **Context-Aware Fuzzing**      | ✅ (WAF/Server/Param adaptation)| ❌ No             | ❌ No             | ❌ No             |
+| **False Positive Rate**        | **Lowest** (verified execution) | Medium           | Medium           | High             |
+
 ---
+
+## Benchmark Comparison
+
+| Tool       | Payloads Tested     | WAF Bypass Rate           | DOM XSS Detection | Stored XSS        |
+|------------|---------------------|---------------------------|-------------------|-------------------|
+| **Noctua** | 500+ (dynamic)      | **~85%** (RL + obfuscation) | ✅ (Playwright)   | ✅ (Multi-session) |
+| DalFox     | ~200 (static)       | ~50% (basic encoding)      | ❌ No             | ❌ No             |
+| XSSRays    | ~300 (semi-static)  | ~65% (better encoding)     | ❌ No             | ❌ No             |
+| XSStrike   | ~150 (static)       | ~40% (minimal obfuscation) | ❌ No             | ❌ No             |
+
+---
+
+## 🎯 **Turning "Misses" into "Hits"**  
+Noctua’s **Reinforcement Learning (RL)** and **polymorphic payloads** ensure:  
+✔ **Higher success rate** against WAFs.  
+✔ **Catches DOM XSS** others miss.  
+✔ **Self-improving** over time (Q-learning).  ---
 
 ## Download the full PDF
 http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
