@@ -1,7 +1,3 @@
-# Next Generation XSS Fuzzer
-
-
-
 ## **Why Noctua?**  
 Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
 ✅ **Reinforcement Learning (RL)** for adaptive payload selection.  
