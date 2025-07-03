@@ -501,7 +501,7 @@ def _write_sarif(self):
 #  ARGPARSE CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 ap = argparse.ArgumentParser(
-      description=f"Noctua v{VERSION} · Enterprise AI XSS Fuzzer (RL edition)")
+      description=f"Noctua X · v{VERSION} ")
 mx = ap.add_mutually_exclusive_group()
 mx.add_argument("--reflected", action="store_true", help="Fuzz reflected XSS only")
 mx.add_argument("--stored",    action="store_true", help="Fuzz stored XSS only")
