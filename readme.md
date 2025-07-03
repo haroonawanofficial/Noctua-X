@@ -67,6 +67,16 @@ http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 
 ## Key Features
 ```
+- Encoding (hex, URL, unicode, base64)
+- Structural rewrites (swapping attribute order, obfuscating tags)
+- Wrapping in innocent-looking tags
+- Inserting comments/random whitespace
+- Reversing, right-to-left override
+- Rebuilding payload trees (AST/JS-based)
+- Static filters and WAFs often look for exact patterns
+- Polymorphic payloads bypass regex/sig-based detection
+- Useful in zero-day fuzzing, evasion testing, and XSS detection in hardened environments
+- It generates on-the-fly AI mutation and polymorphic encoding to craft unique, never-seen-before XSS payloads tailored to each context automatically for perfect hit!
 - AI-Based Context-Aware Fuzzing uniquepayloads, generated on-the-fly with AI mutation
 - Super-crawler: Walks every same-origin link and scrapes JavaScript (fetch, axios, XHR) to surface hidden APIs
 - Headless Chromium verifier using Playwright — intercepts dialog events and DOM side effects to confirm exploitation
@@ -226,21 +236,3 @@ Findings are appended to reports/YYYY‑MM‑DD‑HHMM.md:
 │   ✓ fuzzing complete
 ```
 
-## In Noctua, polymorphing includes:
-- Encoding (hex, URL, unicode, base64)
-- Structural rewrites (swapping attribute order, obfuscating tags)
-- Wrapping in innocent-looking tags
-- Inserting comments/random whitespace
-- Reversing, right-to-left override
-- Rebuilding payload trees (AST/JS-based)
-
-## Why it's important:
-- Static filters and WAFs often look for exact patterns
-- Polymorphic payloads bypass regex/sig-based detection
-- Useful in zero-day fuzzing, evasion testing, and XSS detection in hardened environments
-
-## Generates never seen before payload on the spot 
-- It generates on-the-fly AI mutation and polymorphic encoding to craft unique, never-seen-before XSS payloads tailored to each context automatically for perfect hit!
-```
-<!--><script>__proto__.x=amounts</script><!-->
-```
