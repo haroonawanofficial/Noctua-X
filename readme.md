@@ -1,5 +1,5 @@
 ## **What is Noctua X?**  
-Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
+Noctua X is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
 ✅ **Reinforcement Learning (RL)** for adaptive payload selection.  
 ✅ **Playwright-powered browser verification** (Any kind of XSS detection including DOM).  
 ✅ **50+ polymorphic encodings** + **AI-generated payloads**.  
@@ -9,7 +9,7 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 
 ## **Comparison with Other Tools**  
 
-| Feature               | Noctua | DalFox | XSSRays | XSStrike |
+| Feature               | Noctua X | DalFox | XSSRays | XSStrike |
 |-----------------------|--------|--------|---------|----------|
 | **AI/RL Optimization** | ✅ Yes | ❌ No | ❌ No | ❌ No |
 | **Browser Verification** | ✅ (Playwright) | ❌ | ❌ | ❌ |
@@ -23,7 +23,7 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 
 ## Precision & Accuracy Comparison
 
-| Feature                      | Noctua                          | DalFox            | XSSRays           | XSStrike          |
+| Feature                      | Noctua X                          | DalFox            | XSSRays           | XSStrike          |
 |------------------------------|---------------------------------|-------------------|-------------------|-------------------|
 | **AI & Reinforcement Learning** | ✅ Self-optimizing payloads    | ❌ No             | ❌ No             | ❌ No             |
 | **Browser-Based Verification**  | ✅ (Playwright)               | ❌ No             | ❌ No             | ❌ No             |
@@ -37,7 +37,7 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 
 | Tool       | Payloads Tested     | WAF Bypass Rate           | DOM XSS Detection | Stored XSS        |
 |------------|---------------------|---------------------------|-------------------|-------------------|
-| **Noctua** | 500+ (dynamic)      | **~85%** (RL + obfuscation) | ✅ (Playwright)   | ✅ (Multi-session) |
+| **Noctua X** | 500+ (dynamic)      | **~85%** (RL + obfuscation) | ✅ (Playwright)   | ✅ (Multi-session) |
 | DalFox     | ~200 (static)       | ~50% (basic encoding)      | ❌ No             | ❌ No             |
 | XSSRays    | ~300 (semi-static)  | ~65% (better encoding)     | ❌ No             | ❌ No             |
 | XSStrike   | ~150 (static)       | ~40% (minimal obfuscation) | ❌ No             | ❌ No             |
@@ -45,7 +45,7 @@ Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforceme
 ---
 
 ## **Turning "Misses" into "Hits"**  
-Noctua’s **Reinforcement Learning (RL)** and **polymorphic payloads** ensure:  
+Noctua X’s **Reinforcement Learning (RL)** and **polymorphic payloads** ensure:  
 ✔ **Higher success rate** against WAFs.  
 ✔ **Catches DOM XSS** others miss.  
 ✔ **Self-improving** over time (Q-learning) with reward system, making extreme success rate
@@ -53,7 +53,7 @@ Noctua’s **Reinforcement Learning (RL)** and **polymorphic payloads** ensure:
 ---
 
 ## Download the full PDF
-http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
+http://cyberzeus.pk/Noctua X_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 
 ---
 
@@ -115,7 +115,7 @@ http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 - Race-condition fuzzing & deferred triggers
 - CSRF & Auth Cookie handling logic
 - Multi-session stored XSS testing
-- Auto Markdown logging (Noctua_findings.md)
+- Auto Markdown logging (Noctua X_findings.md)
 - JSON/SARIF/Slack hooks (future reserved)
 - ThreadPoolExecutor with --threads
 - Page/Depth/WAF/SPAs/Poly/Headed flags
@@ -136,7 +136,7 @@ http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 
 
 # Overview
-## What XSS vector Noctua targets?
+## What XSS vector Noctua X targets?
 ```
 - Script‑tag injections (<script>, <mg src=x onerror=…>)
 - Attribute/event‑handler injections (onload=, onclick=, etc.)
@@ -189,8 +189,8 @@ http://cyberzeus.pk/Noctua_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 
 ## Installation
 ```bash
-git clone https://github.com/haroonawanofficial/Noctua.git
-cd Noctua
+git clone https://github.com/haroonawanofficial/Noctua X.git
+cd Noctua X
 
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt      # Playwright installs Chromium automatically
@@ -198,7 +198,7 @@ pip install -r requirements.txt      # Playwright installs Chromium automaticall
 # If Playwright skipped browser download, run:
 # playwright install chromium
 
-python Noctua.py --url http://testphp.vulnweb.com
+python Noctua X.py --url http://testphp.vulnweb.com
 
 Common CLI Flags
 
