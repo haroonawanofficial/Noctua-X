@@ -1,3 +1,12 @@
+<div align="center">
+  <img src="https://i.ibb.co/TqMDXDFr/Copilot-20250703-132618.png" alt="Noctua XSS Tool Comparison" width="800">
+  <br>
+  <em>Comprehensive benchmark showing Noctua's superior WAF bypass and detection capabilities</em>
+</div>
+
+
+---
+
 ## **Why Noctua?**  
 Noctua is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
 ✅ **Reinforcement Learning (RL)** for adaptive payload selection.  
