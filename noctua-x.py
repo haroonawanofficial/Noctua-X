@@ -114,7 +114,7 @@ RATE_LIMIT_SLEEP = 0.05
 SESSION_SPLICE_MS= 100
 JITTER_MIN_MS    = 20
 JITTER_MAX_MS    = 200
-VERIFY_TIMEOUT   = 9000
+VERIFY_TIMEOUT   = 20000
 HTTP_TIMEOUT     = 12
 HEADLESS_WAIT    = 3500
 
@@ -1529,20 +1529,25 @@ async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
 
         page.on("request", on_request)
 
-        # try networkidle first, then fall back to load on timeout
+        # first try networkidle, then load, then domcontentloaded
         try:
             await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-        except PlaywrightError as e:
-            logging.warning(f"[crawl_dynamic_async] Timeout loading {root}: {e}. Retrying with 'load'.")
+        except PlaywrightError as e1:
+            logging.warning(f"[crawl_dynamic_async] networkidle timeout for {root}: {e1}. retrying with 'load'.")
             try:
                 await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="load")
             except PlaywrightError as e2:
-                logging.error(f"[crawl_dynamic_async] Fallback 'load' failed for {root}: {e2}")
+                logging.warning(f"[crawl_dynamic_async] load timeout for {root}: {e2}. retrying with 'domcontentloaded'.")
+                try:
+                    await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="domcontentloaded")
+                except PlaywrightError as e3:
+                    logging.error(f"[crawl_dynamic_async] domcontentloaded also failed for {root}: {e3}")
 
         await page.wait_for_timeout(2000)
         await context.close()
         await browser.close()
 
+    # parse the JSON'd entries back into dicts
     return [json.loads(x) for x in found]
 
 
