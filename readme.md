@@ -1,11 +1,12 @@
 ## **What is Noctua X?**  
 Noctua X is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
-✅ **Reinforcement Learning (RL)** for adaptive payload selection.  
+✅ **Reinforcement Learning (RL)** Adaptive payload selection.  
 ✅ **Playwright-powered browser verification** (Any kind of XSS detection including DOM).  
 ✅ **50+ polymorphic encodings** + **AI-generated payloads**.  
 ✅ **WAF/Server-aware evasion** (Cloudflare, ModSecurity, etc.).  
 ✅ **Evades WAF/CDN protections** Advanced obfuscation and TLS/header mutations.  
 ✅ **DOM/XHR-aware engine** Identifies client-side injection sinks (e.g., eval, innerHTML, fetch, XMLHttpRequest, WebSocket.send, postMessage).  
+✅ **XSS-aware Engine** Comprehensive detection of all XSS vectors including Reflected, Stored, Blind, WebSocket-based, and XML-based attacks, with full support for DOM-context analysis, asynchronous sinks.  
 
 ---
 
