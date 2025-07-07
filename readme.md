@@ -4,8 +4,8 @@ Noctua X is the **most advanced with Context Aware, Server Aware, Self Reinforce
 ✅ **Playwright-powered browser verification** (Any kind of XSS detection including DOM).  
 ✅ **50+ polymorphic encodings** + **AI-generated payloads**.  
 ✅ **WAF/Server-aware evasion** (Cloudflare, ModSecurity, etc.).  
-✅ **Evades WAF/CDN protections** Advanced obfuscation and TLS/header mutations.
-✅ **DOM/XHR-aware engine** Identifies client-side injection sinks (e.g., eval, innerHTML, fetch, XMLHttpRequest, WebSocket.send, postMessage).
+✅ **Evades WAF/CDN protections** Advanced obfuscation and TLS/header mutations.  
+✅ **DOM/XHR-aware engine** Identifies client-side injection sinks (e.g., eval, innerHTML, fetch, XMLHttpRequest, WebSocket.send, postMessage).  
 
 ---
 
