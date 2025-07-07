@@ -1,5 +1,5 @@
 ## **What is Noctua X?**  
-Noctua X is the **most advanced with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based Fuzzer** today, combining:  
+Noctua X is the **Next-Generation with Context Aware, Server Aware, Self Reinforcement, Fully Adaptive and Waf Aware AI Based XSS Fuzzer** today, it offers:  
 ✅ **Reinforcement Learning (RL)** Adaptive payload selection.  
 ✅ **Playwright-powered browser verification** (Any kind of XSS detection including DOM).  
 ✅ **50+ polymorphic encodings** + **AI-generated payloads**.  
