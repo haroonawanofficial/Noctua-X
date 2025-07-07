@@ -10,6 +10,14 @@ Noctua X is the **most advanced with Context Aware, Server Aware, Self Reinforce
 
 ---
 
+# Works with
+- All Modern Dynamic Websites/Webpages
+- All Modern Dynamic Endpoints
+- All Modern Dynamic Apps
+- Discovers moder under the hidden surface...
+
+---
+
 ## **Comparison with Other Tools**  
 
 | Feature               | Noctua X | DalFox | XSSRays | XSStrike |
@@ -128,18 +136,7 @@ http://cyberzeus.pk/Noctua X_Autonomous_XSS_Fuzzing_Comphrensive_Guide.pdf
 ---
 
 
-# Supports
-- All Modern Dynamic Websites/Webpages
-- All Modern Dynamic Endpoints
-- All Modern Dynamic Apps
-- Discovers moder under the hidden surface
-- Detects more
-- Full support for DNS based beacons
-- Detects what others miss!
-
-
-# Overview
-## What XSS vector Noctua X targets?
+## The targets?
 ```
 - Script‑tag injections (<script>, <mg src=x onerror=…>)
 - Attribute/event‑handler injections (onload=, onclick=, etc.)
