@@ -114,7 +114,7 @@ RATE_LIMIT_SLEEP = 0.05
 SESSION_SPLICE_MS= 100
 JITTER_MIN_MS    = 20
 JITTER_MAX_MS    = 200
-VERIFY_TIMEOUT   = 20000
+VERIFY_TIMEOUT   = 45000
 HTTP_TIMEOUT     = 12
 HEADLESS_WAIT    = 3500
 
@@ -154,6 +154,16 @@ WAF_SPOOF_HEADERS = [
     {"X-CDN": "Incapsula"},
     {"X-Edge-IP": "127.0.0.1"},
 ]
+
+def random_headers():
+    return {
+        **WAFUnblocker().build_headers(),
+        "Accept": "text/html,application/xhtml+xml",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-User": "?1",
+        "Sec-Fetch-Dest": "document"
+    }
 
 # Slack & SARIF (optional at run‑time)
 SLACK_WEBHOOK_URL: Optional[str] = None
@@ -215,6 +225,11 @@ SQL_ERROR_RE = re.compile(
 # ─────────────────────────────────────────────────────────────────────────────
 #  NEW: BLIND XSS CALLBACK HANDLER
 # ─────────────────────────────────────────────────────────────────────────────
+class DomXssAnalyzer:
+    def __init__(self, page):
+        self.page = page
+        self.vulns = []  # ← Fix: initialize vulns list
+
 class BlindXSSCallbackServer:
     """A built-in server to listen for out-of-band XSS callbacks."""
     def __init__(self, host='0.0.0.0', port=8080):
@@ -338,68 +353,211 @@ class DiscoveryEngine:
 #  NEW: DOM XSS ANALYSIS ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 class DomXssAnalyzer:
-    """Uses Playwright to find DOM-based XSS vulnerabilities."""
+    """
+    Ultra-aggressive DOM XSS detector:
+      • Hooks eval, new Function, setTimeout, setInterval
+      • Hooks innerHTML, outerHTML, document.write, setAttribute
+      • Hooks element.src, href, location changes
+      • Captures full stack, element context & attribute
+      • Sends a beacon for each finding
+    """
+    SNIFF_SOURCES = [
+        # URL fragments
+        "location.href", "location.origin", "location.protocol",
+        "location.host", "location.hostname", "location.port",
+        "location.pathname", "location.search", "location.hash",
 
-    SOURCES = [
-        "location.href", "location.search", "location.hash", "document.URL",
-        "document.documentURI", "window.name", "document.cookie"
+        # Document properties
+        "document.URL", "document.documentURI", "document.baseURI",
+        "document.referrer",
+
+        # Window context
+        "window.name", "window.opener", "window.parent", "window.top",
+
+        # Storage APIs
+        "document.cookie", "localStorage.getItem", "sessionStorage.getItem",
+        "indexedDB.open", "history.state",
+
+        # Messaging
+        "window.postMessage", "event.data"
     ]
 
-    def __init__(self, page):
+    def __init__(self, page, beacon_url: str = None):
         self.page = page
-        self.vulnerabilities = []
+        self.vulns = []
+        self.beacon = beacon_url
 
     async def analyze(self):
-        """Analyzes the current page for source-to-sink data flows."""
-        logging.info(f"[DOM-XSS] Analyzing {self.page.url} for DOM sinks.")
+        self.vulns.clear()
 
-        # inside DomXssAnalyzer.analyze()
-        await self.page.add_init_script(f"""
-        (() => {{
-            const XSS_SOURCES = {json.dumps(self.SOURCES)};
-            window._dom_xss_found = [];
+        await self.page.set_extra_http_headers({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Site': 'same-origin'
+        })
 
-            const isTainted = v => XSS_SOURCES.some(src => v && v.includes(src));
+        # Inject XSS detection script into all contexts
+        await self.page.context.add_init_script(f"""
+            (() => {{
+                if (!window.__xss_hits) window.__xss_hits = [];
+                const SS = {json.dumps(self.SNIFF_SOURCES)};
+                const PAYLOADS = {json.dumps(BASE_PAYLOADS + EXTRA_BASE)};
 
-            /* hook eval */
-            const origEval = window.eval;
-            window.eval = function (payload) {{
-                if (isTainted(payload)) {{
-                    window._dom_xss_found.push({{sink:'eval', payload}});
-                    console.warn('[DOM-XSS] eval →', payload);
+                function isTainted(v) {{
+                    return SS.some(src => v && v.includes(src)) || 
+                        PAYLOADS.some(p => v && v.includes(p));
                 }}
-                return origEval.call(this, payload);
-            }};
 
-            /* hook innerHTML */
-            const d = Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');
-            Object.defineProperty(Element.prototype,'innerHTML', {{
-                set(val) {{
-                    if (isTainted(val)) {{
-                        window._dom_xss_found.push({{sink:'innerHTML', payload: val}});
-                        console.warn('[DOM-XSS] innerHTML →', val);
+                function record(sink, payload, elem, attr) {{
+                    const payloadType = PAYLOADS.find(p => payload.includes(p)) || 'custom';
+                    const stack = new Error().stack.split('\\n').slice(2).join('\\n');
+                    const info = {{
+                        page: location.href,
+                        sink, 
+                        payload,
+                        payloadType,
+                        tag: elem?.tagName, 
+                        id: elem?.id, 
+                        cls: elem?.className,
+                        attr, 
+                        stack,
+                        timestamp: Date.now()
+                    }};
+                    window.__xss_hits.push(info);
+                    console.error("[XSS]", info);
+                    {f"""
+                    fetch("{self.beacon}", {{
+                        method: "POST",
+                        keepalive: true,
+                        headers: {{ "Content-Type": "application/json" }},
+                        body: JSON.stringify(info)
+                    }}).catch(e => console.error('Beacon failed:', e));""" if self.beacon else ""}
+                }}
+
+                const hook = (obj, prop, name, getVal, setVal) => {{
+                    const origDesc = Object.getOwnPropertyDescriptor(obj, prop);
+                    if (origDesc?.set) {{
+                        Object.defineProperty(obj, prop, {{
+                            set(v) {{
+                                if (isTainted(getVal(this, v))) record(name, getVal(this, v), this, prop);
+                                return origDesc.set.call(this, setVal ? setVal(this, v) : v);
+                            }},
+                            get: origDesc.get
+                        }});
                     }}
-                    return d.set.call(this, val);
-                }}
-            }});
-        }})();
+                }};
+
+                const sinks = [
+                    {{ obj: window, prop: 'eval', name: 'eval' }},
+                    {{ obj: window, prop: 'Function', name: 'Function' }},
+                    {{ obj: window, prop: 'setTimeout', name: 'setTimeout' }},
+                    {{ obj: window, prop: 'setInterval', name: 'setInterval' }},
+                    {{ obj: Element.prototype, prop: 'innerHTML', name: 'innerHTML' }},
+                    {{ obj: Element.prototype, prop: 'outerHTML', name: 'outerHTML' }},
+                    {{ obj: Document.prototype, prop: 'write', name: 'document.write' }},
+                    {{ obj: Document.prototype, prop: 'writeln', name: 'document.writeln' }},
+                    {{ obj: Element.prototype, prop: 'src', name: 'element.src' }},
+                    {{ obj: HTMLAnchorElement.prototype, prop: 'href', name: 'a.href' }},
+                    {{ obj: HTMLScriptElement.prototype, prop: 'src', name: 'script.src' }},
+                    {{ obj: HTMLIFrameElement.prototype, prop: 'src', name: 'iframe.src' }},
+                    {{ obj: Location.prototype, prop: 'href', name: 'location.href' }},
+                    {{ obj: Location.prototype, prop: 'assign', name: 'location.assign' }},
+                    {{ obj: Location.prototype, prop: 'replace', name: 'location.replace' }}
+                ];
+
+                sinks.forEach(({obj, prop, name}) => {{
+                    const original = obj[prop];
+                    obj[prop] = function(...args) {{
+                        const val = args[0];
+                        if (isTainted(val)) record(name, val, this, prop);
+                        return original.apply(this, args);
+                    }};
+                }});
+
+                const realSetAttr = Element.prototype.setAttribute;
+                Element.prototype.setAttribute = function(name, value) {{
+                    if (isTainted(value)) record("setAttribute", value, this, name);
+                    return realSetAttr.call(this, name, value);
+                }};
+
+                const realAC = Node.prototype.appendChild;
+                Node.prototype.appendChild = function(node) {{
+                    if (node instanceof Text && isTainted(node.data))
+                        record("appendChild(Text)", node.data, this.parentElement, null);
+                    return realAC.call(this, node);
+                }};
+            }})();
         """)
 
+        # Reload page to trigger script injection and cover route changes
+        canary = "XSS_CANARY_" + randstr(6)
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                for wait_until in ["networkidle", "load", "domcontentloaded"]:
+                    try:
+                        await self.page.goto(self.page.url + "#" + canary, timeout=VERIFY_TIMEOUT, wait_until=wait_until)
+                        break
+                    except PlaywrightError:
+                        if attempt == max_attempts - 1:
+                            logging.warning(f"Failed to load page after {max_attempts} attempts")
+                            return
 
-        # Reload the page with a unique fragment to trigger hooks
-        canary = "NoctuaCanary" + randstr(8)
-        await self.page.goto(self.page.url + "#" + canary, wait_until="networkidle")
-        await self.page.wait_for_timeout(500)
+                await self.page.evaluate("""() => {
+                    history.pushState({}, '', '/new-route');
+                    window.dispatchEvent(new Event('popstate'));
+                }""")
 
-        # Collect any findings
-        found = await self.page.evaluate("() => window._dom_xss_found")
-        for vuln in found or []:
-            logging.critical(f"[DOM-XSS] Potential DOM XSS found! Sink: {vuln['sink']}, Payload: {vuln['payload']}")
-            self.vulnerabilities.append(vuln)
+                await self.page.wait_for_timeout(800)
+
+                # Support for iframe/frame XSS checks
+                for frame in self.page.frames:
+                    try:
+                        await frame.wait_for_load_state()
+                    except Exception:
+                        continue
+
+                # Trigger navigation if possible
+                try:
+                    await self.page.click('a[href]')
+                    await self.page.wait_for_navigation(timeout=3000)
+                except:
+                    pass
+
+                await self.page.wait_for_timeout(1000)
+
+                # Final evaluation to pull __xss_hits
+                hits = await self.page.evaluate("""() => {
+                    if (Array.isArray(window.__xss_hits)) return window.__xss_hits;
+                    return [];
+                }""")
+
+                seen = set()
+                for h in hits:
+                    key = f"{h['page']}-{h['sink']}-{h['payload']}-{h['stack']}"
+                    if key not in seen:
+                        seen.add(key)
+                        logging.critical(
+                            f"[DOM-XSS] {h['page']} → {h['sink']} <{h['tag']} id={h['id']} cls={h['cls']}> (Type: {h.get('payloadType', 'custom')})"
+                        )
+                        self.vulns.append(h)
+                break
+
+            except Exception as e:
+                logging.error(f"[XSS Analysis Error] Attempt {attempt + 1} failed: {e}")
+                if attempt == max_attempts - 1:
+                    logging.error("Giving up after multiple failures")
+
+
+
 
     def _get_source_check(self, var_name: str) -> str:
-        """Helper to  JS code that checks if a variable contains tainted data."""
-        return " || ".join([f"{var_name}.includes(source)" for source in self.SOURCES])
+        """Helper to return JS code that checks if a variable contains tainted data."""
+        checks = []
+        for src in self.SOURCES:
+            # wrap src in quotes so JS sees it as a string literal
+            escaped = json.dumps(src)  
+            checks.append(f"{var_name}.includes({escaped})")
+        return " || ".join(checks)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SUPERCHARGED: REINFORCEMENT LEARNING AGENT
@@ -1148,6 +1306,7 @@ async def verify(url: str, method: str, data: Dict[str, Any], is_json: bool = Fa
                 user_agent=UserAgent().random,
                 java_script_enabled=True
             )
+
             page = await context.new_page()
 
             # Setup XSS detection
@@ -1216,32 +1375,28 @@ async def _save_evidence_async(page, url: str) -> None:
     except Exception as e:
         logging.debug(f"[save_evidence_async] {e}")
 
-async def verify_with_playwright_async(
-    url: str, method: str, data: Dict[str, Any],
-    is_json: bool, headed: bool
-) -> bool:
-    """Fully async XSS detection using Playwright with WAF-unblocker tweaks."""
+async def verify(url: str, method: str, data: Dict[str, Any], is_json: bool = False, headed: bool = False) -> bool:
+    """Async verification function using Playwright's async API with early script injection."""
     try:
         async with async_playwright() as p:
-
-            # launch with additional TLS-fingerprint / ALPN mutations
             browser = await p.chromium.launch(
                 headless=not headed,
-                args=get_playwright_args() + WAFUnblocker().playwright_args()   # ← merged extra flags
+                args=[
+                    "--disable-web-security",
+                    "--ignore-certificate-errors",
+                    "--no-sandbox",
+                    "--disable-gpu"
+                ]
             )
 
-            # create context that sprays advanced spoof headers
             context = await browser.new_context(
                 ignore_https_errors=True,
-                java_script_enabled=True,
-                extra_http_headers=WAFUnblocker().build_headers(),             # ← header cloak
-                user_agent="Mozilla/5.0 (Noctua Canary System)"
+                user_agent=UserAgent().random,
+                java_script_enabled=True
             )
 
-            page = await context.new_page()
-
-            # detection hook
-            await page.add_init_script("""
+            # ✅ Early script injection via context (not page) ensures it loads before navigation
+            await context.add_init_script("""
                 window._xss_detected = false;
                 const orig = window.alert;
                 window.alert = function() {
@@ -1250,33 +1405,43 @@ async def verify_with_playwright_async(
                 };
             """)
 
-            # prepare target
-            target = url
-            if method.upper() == "GET" and data:
-                from urllib.parse import urlencode
-                target = f"{url}?{urlencode(data)}"           # valid Python f-string
-                
-            await page.goto(target, wait_until="networkidle", timeout=VERIFY_TIMEOUT)
+            page = await context.new_page()
 
-            if method.upper() == "POST":
-                payload = json.dumps(data) if is_json else "&".join(f"{k}={v}" for k, v in data.items())
-                ctype   = "application/json" if is_json else "application/x-www-form-urlencoded"
-                await page.evaluate(
-                    """(u,b,ct)=>fetch(u,{method:'POST',headers:{'Content-Type':ct},body:b})""",
-                    url, payload, ctype
+            if method.upper() == "GET":
+                target = f"{url}?{urlencode(data)}" if data else url
+                await page.goto(target, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
+
+            else:
+                await page.goto(url, timeout=VERIFY_TIMEOUT, wait_until="domcontentloaded")
+                await page.wait_for_timeout(500)  # Let page JS settle
+
+                fetch_script = """([u, d]) => fetch(u, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': '%s'
+                    },
+                    body: %s
+                })""" % (
+                    "application/json" if is_json else "application/x-www-form-urlencoded",
+                    "JSON.stringify(d)" if is_json else "new URLSearchParams(d).toString()"
                 )
-                await page.wait_for_timeout(2000)
+
+                await page.evaluate(fetch_script, [url, data])
+                await page.wait_for_timeout(2000)  # Allow DOM/script time to trigger alert()
 
             detected = await page.evaluate("window._xss_detected")
+
             if detected:
                 await _save_evidence_async(page, url)
 
             await browser.close()
             return detected
 
+    except PlaywrightError as e:
+        logging.error(f"[verify] PlaywrightError: {e}")
     except Exception as e:
-        logging.error(f"[verify_with_playwright_async] Error: {e}")
-        return False
+        logging.error(f"[verify] Unexpected error: {e}")
+    return False
 
 async def run_dom_analysis(
     urls: Set[str],
@@ -1293,24 +1458,51 @@ async def run_dom_analysis(
             context = await browser.new_context(ignore_https_errors=True)
             page = await context.new_page()
 
-            analyzer = DomXssAnalyzer(page)  # ← ensure this is async-aware
+            analyzer = DomXssAnalyzer(page)
+            failure_count = 0
 
             for url in urls:
-                await page.goto(url, wait_until="networkidle", timeout=VERIFY_TIMEOUT)
+                success = False
+                for wait in ("networkidle", "load", "domcontentloaded"):
+                    try:
+                        await page.goto(url, timeout=VERIFY_TIMEOUT, wait_until=wait)
+                        success = True
+                        break
+                    except PlaywrightError as e:
+                        logging.warning(f"[DOM] goto '{wait}' timed out for {url}: {e}")
+
+                if not success:
+                    logging.error(f"[DOM] All goto attempts failed for {url}, skipping.")
+                    failure_count += 1
+                    if failure_count >= 10:
+                        logging.info("[DOM] Too many timeouts, aborting DOM analysis.")
+                        break
+                    continue
+
+                analyzer.vulns.clear()
                 await analyzer.analyze()
 
-                for vuln in analyzer.vulnerabilities:
+                for vuln in analyzer.vulns:
+                    detailed_evidence = (
+                        f"Sink: {vuln['sink']} on <{vuln['tag']} id='{vuln['id']}' class='{vuln['cls']}'>\n"
+                        f"Attribute: {vuln.get('attr')}\n"
+                        f"Payload: {vuln['payload']}\n"
+                        f"Stack trace:\n{vuln['stack']}"
+                    )
+
                     reporter.add_finding(
                         url=url,
                         param="DOM",
                         payload=vuln["payload"],
                         vuln_type="DOM XSS",
-                        evidence=f"Sink: {vuln['sink']}"
+                        evidence=detailed_evidence
                     )
 
             await browser.close()
     except Exception as e:
         logging.error(f"[run_dom_analysis] Error: {e}")
+
+
 
 def verify_reflection_fallback(
     url: str,
@@ -1489,265 +1681,20 @@ def normalize_url(u: str) -> str:
     return p._replace(query="", fragment="").geturl().lower()
 
 from playwright.async_api import async_playwright, Error as PlaywrightError
-
-async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
-    """
-    Asynchronously crawl dynamic requests made when loading the page.
-    Returns a list of dicts with keys: url, method, json (bool), params (list), template (dict).
-    """
-    found: set[str] = set()
-    host = urllib.parse.urlparse(root).netloc.lower()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(ignore_https_errors=True)
-        page = await context.new_page()
-
-        async def on_request(request):
-            u = normalize_url(request.url)
-            if urllib.parse.urlparse(u).netloc.lower() != host or u in found:
-                return
-            found.add(u)
-            m = request.method.upper()
-            hdr = (request.headers.get("content-type") or "").lower()
-            is_json = "json" in hdr or "graphql" in hdr
-            try:
-                data = json.loads(request.post_data or "{}")
-                params = list(data.keys())
-            except Exception:
-                qs = urllib.parse.urlparse(request.url).query
-                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                data = {}
-            entry = {
-                "url": u,
-                "method": m if m in ("POST", "PUT") else "GET",
-                "json": is_json,
-                "params": params,
-                "template": data if is_json else {}
-            }
-            found.add(json.dumps(entry))
-
-        page.on("request", on_request)
-
-        # first try networkidle, then load, then domcontentloaded
-        try:
-            await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-        except PlaywrightError as e1:
-            logging.warning(f"[crawl_dynamic_async] networkidle timeout for {root}: {e1}. retrying with 'load'.")
-            try:
-                await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="load")
-            except PlaywrightError as e2:
-                logging.warning(f"[crawl_dynamic_async] load timeout for {root}: {e2}. retrying with 'domcontentloaded'.")
-                try:
-                    await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="domcontentloaded")
-                except PlaywrightError as e3:
-                    logging.error(f"[crawl_dynamic_async] domcontentloaded also failed for {root}: {e3}")
-
-        await page.wait_for_timeout(2000)
-        await context.close()
-        await browser.close()
-
-    # parse the JSON'd entries back into dicts
-    return [json.loads(x) for x in found]
+from urllib.parse import urlparse
+import json, logging
 
 
-async def spa_dynamic_crawl_async(
-    root: str,
-    max_clicks: int = 20
-) -> List[Dict[str, Any]]:
-    """
-    Asynchronously crawl a SPA by clicking through links/buttons.
-    Returns a list of dicts with keys: url, method, json, params, template.
-    """
-    found: set[str] = set()
-    seen_req: set[str] = set()
-    host = urllib.parse.urlparse(root).netloc.lower()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
-        )
-        context = await browser.new_context(
-            ignore_https_errors=True,
-            user_agent=UserAgent().random
-        )
-        page: Page = await context.new_page()
-
-        async def on_request(request):
-            u = normalize_url(request.url)
-            sig = f"{request.method}:{u}"
-            if urllib.parse.urlparse(u).netloc.lower() != host or sig in seen_req:
-                return
-            seen_req.add(sig)
-            m = request.method.upper()
-            hdr = (request.headers.get("content-type") or "").lower()
-            is_json = "json" in hdr
-            try:
-                body = json.loads(request.post_data or "{}")
-                params = list(body.keys())
-            except Exception:
-                qs = urllib.parse.urlparse(request.url).query
-                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                body = {}
-
-            entry = json.dumps({
-                "url": u,
-                "method": m if m in ("POST", "PUT") else "GET",
-                "json": is_json,
-                "params": params,
-                "template": body if is_json else {}
-            })
-            found.add(entry)
-
-        page.on("request", on_request)
-        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-
-        # simulate clicks
-        for _ in range(max_clicks):
-            els = await page.query_selector_all("a[href],button,[role=button],.router-link")
-            random.shuffle(els)
-            for e in els:
-                try:
-                    await e.click(timeout=2000)
-                    await page.wait_for_timeout(1500)
-                    break
-                except Exception:
-                    continue
-
-        await context.close()
-        await browser.close()
-
-    return [json.loads(x) for x in found]
 
 
 def normalize_url(u: str) -> str:
     p = urllib.parse.urlparse(u)
     return p._replace(query="", fragment="").geturl().lower()
 
-async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
-    """
-    Asynchronously crawl dynamic requests made when loading the page.
-    Returns a list of dicts with keys: url, method, json (bool), params (list), template (dict).
-    """
-    found: set[str] = set()
-    seen: set[str] = set()
-    host = urllib.parse.urlparse(root).netloc.lower()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
-        )
-        context = await browser.new_context(
-            ignore_https_errors=True,
-            user_agent=UserAgent().random
-        )
-        page: Page = await context.new_page()
-
-        async def on_request(request):
-            u = normalize_url(request.url)
-            if urllib.parse.urlparse(u).netloc.lower() != host or u in seen:
-                return
-            seen.add(u)
-            m = request.method.upper()
-            hdr = (request.headers.get("content-type") or "").lower()
-            is_json = "json" in hdr or "graphql" in hdr
-            try:
-                data = json.loads(request.post_data or "{}")
-                params = list(data.keys())
-            except Exception:
-                qs = urllib.parse.urlparse(request.url).query
-                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                data = {}
-
-            entry = json.dumps({
-                "url": u,
-                "method": m if m in ("POST", "PUT") else "GET",
-                "json": is_json,
-                "params": params,
-                "template": data if is_json else {}
-            })
-            found.add(entry)
-
-        page.on("request", on_request)
-        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-        await page.wait_for_timeout(2000)
-
-        await context.close()
-        await browser.close()
-
-    return [json.loads(x) for x in found]
 
 
-async def spa_dynamic_crawl_async(
-    root: str,
-    max_clicks: int = 20
-) -> List[Dict[str, Any]]:
-    """
-    Asynchronously crawl a SPA by clicking through links/buttons.
-    Returns a list of dicts with keys: url, method, json, params, template.
-    """
-    found: set[str] = set()
-    seen_req: set[str] = set()
-    host = urllib.parse.urlparse(root).netloc.lower()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-web-security", "--ignore-certificate-errors", "--no-sandbox"]
-        )
-        context = await browser.new_context(
-            ignore_https_errors=True,
-            user_agent=UserAgent().random
-        )
-        page: Page = await context.new_page()
-
-        async def on_request(request):
-            u = normalize_url(request.url)
-            sig = f"{request.method}:{u}"
-            if urllib.parse.urlparse(u).netloc.lower() != host or sig in seen_req:
-                return
-            seen_req.add(sig)
-            m = request.method.upper()
-            hdr = (request.headers.get("content-type") or "").lower()
-            is_json = "json" in hdr
-            try:
-                body = json.loads(request.post_data or "{}")
-                params = list(body.keys())
-            except Exception:
-                qs = urllib.parse.urlparse(request.url).query
-                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                body = {}
-
-            entry = json.dumps({
-                "url": u,
-                "method": m if m in ("POST", "PUT") else "GET",
-                "json": is_json,
-                "params": params,
-                "template": body if is_json else {}
-            })
-            found.add(entry)
-
-        page.on("request", on_request)
-        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-
-        # simulate clicks
-        for _ in range(max_clicks):
-            els = await page.query_selector_all("a[href],button,[role=button],.router-link")
-            random.shuffle(els)
-            for e in els:
-                try:
-                    await e.click(timeout=2000)
-                    await page.wait_for_timeout(1500)
-                    break
-                except Exception:
-                    continue
-
-        await context.close()
-        await browser.close()
-
-    return [json.loads(x) for x in found]
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  GRAPHQL FUZZING
@@ -1861,6 +1808,100 @@ async def fuzz_http(t: Dict[str, Any], use_chunked: bool = False) -> None:
         agent.reward(target_param, payload, R_FAIL)
     jitter()
 
+async def crawl_dynamic_async(root: str) -> list[dict]:
+    """Async crawl with improved timeout handling"""
+    seen = set()
+    results = []
+    host = urlparse(root).netloc.lower()
+    MAX_RETRIES = 3
+    VERIFY_TIMEOUT = 30000  # Increased timeout
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=get_playwright_args()
+        )
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            user_agent=UserAgent().random
+        )
+        page = await context.new_page()
+
+        # Setup request interception
+        async def handle_request(request):
+            u = request.url
+            if urlparse(u).netloc.lower() != host or u in seen:
+                return
+            seen.add(u)
+            
+            # Process request (existing logic)
+            method = request.method.upper()
+            is_json = "json" in (request.headers.get("content-type") or "").lower()
+            try:
+                body = json.loads(request.post_data or "{}")
+                params = list(body.keys())
+            except:
+                qs = urlparse(u).query
+                params = list(parse_qs(qs).keys()) if qs else ["payload"]
+                body = {}
+
+            results.append({
+                "url": u,
+                "method": method if method in ("POST", "PUT") else "GET",
+                "json": is_json,
+                "params": params,
+                "template": body if is_json else {}
+            })
+
+        page.on("request", lambda req: asyncio.create_task(handle_request(req)))
+
+        # Retry logic with progressive fallback
+        for attempt in range(MAX_RETRIES):
+            try:
+                for wait in ("networkidle", "load", "domcontentloaded"):
+                    try:
+                        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until=wait)
+                        break
+                    except PlaywrightError as e:
+                        logging.warning(f"[Attempt {attempt+1}] Goto timeout ({wait}): {e}")
+                else:
+                    continue  # All wait conditions failed
+                
+                await page.wait_for_timeout(2000)  # Allow late requests
+                break
+            except Exception as e:
+                if attempt == MAX_RETRIES - 1:
+                    logging.error(f"Failed after {MAX_RETRIES} attempts: {e}")
+
+        await context.close()
+        await browser.close()
+    return results
+
+async def _handle_request(request, host, seen, results):
+    u = request.url
+    if urlparse(u).netloc.lower() != host or u in seen:
+        return
+    seen.add(u)
+
+    method = request.method.upper()
+    hdr = (request.headers.get("content-type") or "").lower()
+    is_json = "json" in hdr or "graphql" in hdr
+
+    try:
+        body = json.loads(request.post_data or "{}")
+        params = list(body.keys())
+    except:
+        qs = urlparse(u).query
+        params = list(parse_qs(qs).keys()) if qs else ["payload"]
+        body = {}
+
+    results.append({
+        "url": u,
+        "method": method if method in ("POST", "PUT") else "GET",
+        "json": is_json,
+        "params": params,
+        "template": body if is_json else {}
+    })
 
 async def main():
     mode = "all"
@@ -1938,32 +1979,6 @@ async def main():
         # Run all tasks concurrently
         await asyncio.gather(*tasks)
         
-        # DOM Analysis Phase
-        if args.deep_dom:
-            try:
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=not args.headed)
-                    context = await browser.new_context(ignore_https_errors=True)
-                    page = await context.new_page()
-
-                    analyzer = DomXssAnalyzer(page)
-                    for url in discovery.crawled_urls:
-                        await page.goto(url, wait_until="networkidle")
-                        await analyzer.analyze()
-
-                    for vuln in analyzer.vulnerabilities:
-                        reporter.add_finding(
-                            url=page.url,
-                            param="DOM",
-                            payload=vuln['payload'],
-                            vuln_type="DOM XSS",
-                            evidence=f"Sink: {vuln['sink']}"
-                        )
-
-                    await browser.close()
-            except Exception as e:
-                logging.error(f"[DOM Analysis] Error: {e}")
-
     # Check for any late blind XSS callbacks
     if args.blind_xss:
         await asyncio.sleep(60)  # Wait a bit for delayed callbacks
@@ -1983,44 +1998,7 @@ async def main():
     logging.info(f"└─ Findings saved → {reporter.output_file if hasattr(reporter, 'output_file') else LOGFILE.resolve()}\n")
 
 
-# You'll also need these async versions of your crawler functions:
-async def crawl_dynamic_async(root: str) -> List[Dict[str, Any]]:
-    found = []
-    host = urllib.parse.urlparse(root).netloc.lower()
-    
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(ignore_https_errors=True)
-        page = await context.new_page()
-        
-        async def on_request(request):
-            u = request.url
-            if urllib.parse.urlparse(u).netloc.lower() != host:
-                return
-                
-            m = request.method.upper()
-            is_json = "json" in (request.headers.get("content-type", "") or "").lower()
-            try:
-                post_data = json.loads(request.post_data or "{}")
-                params = list(post_data.keys())
-            except:
-                qs = urllib.parse.urlparse(u).query
-                params = list(urllib.parse.parse_qs(qs).keys()) if qs else ["payload"]
-                
-            found.append({
-                "url": u,
-                "method": m if m in ("POST", "PUT") else "GET",
-                "json": is_json,
-                "params": params,
-                "template": post_data if is_json else {}
-            })
-        
-        page.on("request", on_request)
-        await page.goto(root, timeout=VERIFY_TIMEOUT, wait_until="networkidle")
-        await page.wait_for_timeout(2000)
-        await context.close()
-        await browser.close()
-    return found
+
 
 
 async def spa_dynamic_crawl_async(root: str, max_clicks: int = 20) -> List[Dict[str, Any]]:
@@ -2215,31 +2193,65 @@ async def main():
                 exec_pool.submit(fuzz_ws, w)
         exec_pool.shutdown(wait=True)
 
-        # DOM analysis
+        # ─── DOM Analysis Phase ────────────────────────────────────────────────
+
         if args.deep_dom:
             try:
                 async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=not args.headed)
+                    browser = await p.chromium.launch(headless=not args.headed, args=get_playwright_args())
                     context = await browser.new_context(ignore_https_errors=True)
                     page = await context.new_page()
-
                     analyzer = DomXssAnalyzer(page)
-                    for url in discovery.crawled_urls:
-                        await page.goto(url, wait_until="networkidle")
-                        await analyzer.analyze()
 
-                    for vuln in analyzer.vulnerabilities:
-                        reporter.add_finding(
-                            url=page.url,
-                            param="DOM",
-                            payload=vuln['payload'],
-                            vuln_type="DOM XSS",
-                            evidence=f"Sink: {vuln['sink']}"
-                        )
+                    dom_urls = discovery.crawled_urls if args.crawl else [t["url"] for t in http_t]
+                    failure_count = 0
+
+                    for url in dom_urls:
+                        success = False
+                        for wait in ("networkidle", "load", "domcontentloaded"):
+                            try:
+                                await page.goto(url, timeout=VERIFY_TIMEOUT, wait_until=wait)
+                                success = True
+                                break
+                            except PlaywrightError as e:
+                                logging.warning(f"[DOM] goto '{wait}' timed out for {url}: {e}")
+
+                        if not success:
+                            logging.error(f"[DOM] All goto attempts failed for {url}, skipping.")
+                            failure_count += 1
+                            if failure_count >= 10:
+                                logging.info("[DOM] Too many timeouts, aborting DOM analysis.")
+                                break
+                            continue
+
+                        try:
+                            analyzer.vulns.clear()
+                            await analyzer.analyze()
+                        except Exception as e:
+                            logging.warning(f"[DOM] Analyzer failed on {url}: {e}")
+                            continue
+
+                        if analyzer.vulns:
+                            for vuln in analyzer.vulns:
+                                evidence = (
+                                    f"Sink: {vuln.get('sink')} on <{vuln.get('tag')} id='{vuln.get('id')}' class='{vuln.get('cls')}'>\n"
+                                    f"Attribute: {vuln.get('attr')}\n"
+                                    f"Payload: {vuln.get('payload')}\n"
+                                    f"Stack trace:\n{vuln.get('stack')}"
+                                )
+                                reporter.add_finding(
+                                    url=url,
+                                    param="DOM",
+                                    payload=vuln.get("payload"),
+                                    vuln_type="DOM XSS",
+                                    evidence=evidence
+                                )
 
                     await browser.close()
             except Exception as e:
-                logging.error(f"[DOM Analysis] Error: {e}")
+                logging.error(f"[DOM] Unexpected error in DOM phase: {e}")
+
+
 
     # Late blind XSS callbacks
     if args.blind_xss:
