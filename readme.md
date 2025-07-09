@@ -14,7 +14,7 @@ Noctua X is the **Next-Generation with Context Aware, Server Aware, Self Reinfor
 - All Modern Dynamic Websites/Webpages
 - All Modern Dynamic Endpoints
 - All Modern Dynamic Apps
-- Discovers moder under the hidden surface...
+- Discovers more under the hidden surface...
 
 ---
 
