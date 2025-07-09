@@ -409,7 +409,7 @@ class DomXssAnalyzer:
 
                 function record(sink, payload, elem, attr) {{
                     const payloadType = PAYLOADS.find(p => payload.includes(p)) || 'custom';
-                    const stack = new Error().stack.split('\\n').slice(2).join('\\n');
+                    const stack = new Error().stack.split('\n').slice(2).join('\n');
                     const info = {{
                         page: location.href,
                         sink,
@@ -451,7 +451,8 @@ class DomXssAnalyzer:
                     {{ obj: Location.prototype, prop: 'replace', name: 'location.replace' }}
                 ];
 
-                hooks.forEach(({obj, prop, name}) => {{
+                // Escape braces to prevent Python f-string interpolation
+                hooks.forEach(({{{{obj, prop, name}}}}) => {{
                     const original = obj[prop];
                     obj[prop] = function(...args) {{
                         const val = args[0];
@@ -490,10 +491,9 @@ class DomXssAnalyzer:
             }})();
         """)
 
-        # Attempt reload and route-change to trigger hooks
+        # Reload and trigger hooks
         canary = "XSS_CANARY_" + randstr(6)
         max_attempts = 3
-
         for attempt in range(max_attempts):
             try:
                 for wait_until in ["networkidle", "load", "domcontentloaded"]:
@@ -550,6 +550,7 @@ class DomXssAnalyzer:
                 logging.error(f"[XSS Analysis Error] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_attempts - 1:
                     logging.error("Giving up after multiple failures")
+
 
 
 
